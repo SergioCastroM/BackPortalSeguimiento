@@ -22,11 +22,10 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 target_metadata = Base.metadata
-# Preferir SQLite si está en .env del backend; si no, usar config por defecto
-db_url = os.environ.get("DATABASE_URL") or get_settings().DATABASE_URL
-if not db_url.startswith("sqlite"):
-    db_url = f"sqlite:///{backend_dir / 'plan_accion.db'}"
-config.set_main_option("sqlalchemy.url", db_url)
+# Misma URL que la app (incluye Azure SQL si están AZURE_SQL_* en .env)
+db_url = get_settings().get_database_url()
+# Escapar % para ConfigParser (p. ej. %2A en contraseñas)
+config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:

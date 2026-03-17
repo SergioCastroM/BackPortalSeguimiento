@@ -3,12 +3,17 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from app.core.config import get_settings
 
 settings = get_settings()
+db_url = settings.get_database_url()
+
 connect_args = {}
-if settings.DATABASE_URL.startswith("sqlite"):
+if db_url.startswith("sqlite"):
     connect_args["check_same_thread"] = False
+elif "mssql+pyodbc" in db_url:
+    connect_args["fast_executemany"] = True
+
 engine = create_engine(
-    settings.DATABASE_URL,
-    pool_pre_ping=not settings.DATABASE_URL.startswith("sqlite"),
+    db_url,
+    pool_pre_ping=not db_url.startswith("sqlite"),
     connect_args=connect_args,
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
