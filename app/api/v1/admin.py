@@ -38,6 +38,7 @@ class UsuarioCreate(BaseModel):
 class UsuarioUpdate(BaseModel):
     nombre: Optional[str] = None
     email: Optional[EmailStr] = None
+    password: Optional[str] = None
     cargo: Optional[str] = None
     secretaria_id: Optional[int] = None
     rol: Optional[str] = None
@@ -60,6 +61,14 @@ def list_usuarios(db: Session = Depends(get_db), current_user: Usuario = Depends
         )
         for u in users
     ]
+
+
+@router.get("/usuarios/{user_id}", response_model=UsuarioResponse)
+def get_usuario(user_id: int, db: Session = Depends(get_db), current_user: Usuario = Depends(require_admin)):
+    u = db.query(Usuario).filter(Usuario.id == user_id).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    return UsuarioResponse(id=u.id, nombre=u.nombre, email=u.email, cargo=u.cargo, rol=u.rol.value, secretaria_id=u.secretaria_id, secretaria_nombre=u.secretaria.nombre if u.secretaria else None, activo=u.activo)
 
 
 @router.post("/usuarios", response_model=UsuarioResponse)
@@ -98,6 +107,8 @@ def update_usuario(user_id: int, body: UsuarioUpdate, db: Session = Depends(get_
         u.rol = body.rol
     if body.activo is not None:
         u.activo = body.activo
+    if body.password is not None and body.password.strip():
+        u.password_hash = get_password_hash(body.password)
     db.commit()
     db.refresh(u)
     return UsuarioResponse(id=u.id, nombre=u.nombre, email=u.email, cargo=u.cargo, rol=u.rol.value, secretaria_id=u.secretaria_id, secretaria_nombre=u.secretaria.nombre if u.secretaria else None, activo=u.activo)
