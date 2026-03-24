@@ -9,8 +9,10 @@ from __future__ import annotations
 import io
 import re
 from collections import defaultdict
+from datetime import date, datetime
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from app.services.excel_importer import normalize_secretaria_key
@@ -43,15 +45,79 @@ def _tipo_ficha_desde_nombre_solicitante(text: str) -> str:
     return out if out else "(Sin tipo)"
 
 
-def _parse_fecha(val: Any) -> tuple[int | None, int | None]:
-    """Devuelve (año, mes) o (None, None) si no es parseable."""
-    if val is None or (isinstance(val, float) and pd.isna(val)):
+def _parse_fecha_string(s: str) -> tuple[int | None, int | None]:
+    """
+    Texto típico de Excel en español/Windows: mes/día/año con AM/PM (locale en-US).
+    Con dayfirst=True, "1/5/2026" se lee como 1-may en vez de 5-ene y reparte mal los meses.
+
+    Heurística para a/b/aaaa:
+    - Si a > 12 → día/mes (ej. 25/1/2026).
+    - Si b > 12 → mes/día (ej. 1/25/2026 o 2/27/2026).
+    - Si ambos ≤ 12 → mes/día (comportamiento habitual de Excel exportado en inglés).
+    """
+    s = s.strip()
+    if not s:
         return None, None
-    try:
-        if isinstance(val, str):
-            dt = pd.to_datetime(val.strip(), dayfirst=True, errors="coerce")
+    m = re.match(r"^(\d{1,2})[./-](\d{1,2})[./-](\d{4})", s)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        if a > 12:
+            dayfirst = True
+        elif b > 12:
+            dayfirst = False
         else:
-            dt = pd.to_datetime(val, errors="coerce")
+            dayfirst = False  # M/D/Y (evita inflar meses 3–12 con datos solo de ene/feb)
+        dt = pd.to_datetime(s, dayfirst=dayfirst, errors="coerce")
+    else:
+        dt = pd.to_datetime(s, dayfirst=False, errors="coerce")
+    if pd.isna(dt):
+        return None, None
+    return int(dt.year), int(dt.month)
+
+
+def _parse_fecha(val: Any) -> tuple[int | None, int | None]:
+    """
+    Devuelve (año, mes) para agrupar por tipo+año y tipo+mes.
+
+    - Celdas de fecha reales en Excel: Timestamp/datetime → año/mes del calendario.
+    - Serial numérico Excel (días desde 1899-12-30) en rango típico.
+    - Cadenas: ver `_parse_fecha_string` (M/D/Y por defecto si es ambiguo).
+    """
+    if val is None:
+        return None, None
+    if isinstance(val, float) and pd.isna(val):
+        return None, None
+
+    try:
+        if isinstance(val, pd.Timestamp):
+            if pd.isna(val):
+                return None, None
+            return int(val.year), int(val.month)
+
+        if isinstance(val, datetime):
+            return int(val.year), int(val.month)
+
+        if isinstance(val, date):
+            return int(val.year), int(val.month)
+
+        if isinstance(val, np.datetime64):
+            ts = pd.Timestamp(val)
+            if pd.isna(ts):
+                return None, None
+            return int(ts.year), int(ts.month)
+
+        # Serial numérico de Excel (p. ej. columna numérica con formato fecha)
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            fv = float(val)
+            if 35_000 <= fv <= 120_000:
+                ts = pd.to_datetime(fv, unit="D", origin="1899-12-30", errors="coerce")
+                if not pd.isna(ts):
+                    return int(ts.year), int(ts.month)
+
+        if isinstance(val, str):
+            return _parse_fecha_string(val)
+
+        dt = pd.to_datetime(val, errors="coerce")
         if pd.isna(dt):
             return None, None
         return int(dt.year), int(dt.month)
