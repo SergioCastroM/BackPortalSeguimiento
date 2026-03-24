@@ -1,6 +1,7 @@
 """
-Seed de datos iniciales para Plan de Acción 2026.
-Ejecutar: python seed.py (desde la carpeta backend, con venv activo y DB corriendo)
+Seed de datos iniciales (plan, líneas, secretarías, usuarios, período, sectores/indicadores).
+No inserta metas de ejemplo; esas se cargan por Excel.
+Ejecutar manualmente: python seed.py (desde la carpeta backend, con venv activo y DB corriendo).
 """
 import os
 import sys
@@ -28,7 +29,6 @@ from app.models import (
     Programa,
     Producto,
     IndicadorProducto,
-    Meta,
     PeriodoSeguimiento,
     EstadoPeriodo,
 )
@@ -165,46 +165,8 @@ def seed():
                 ind = IndicadorProducto(codigo=f"33010{i+1}00", nombre=f"Indicador producto {prod.nombre[:15]}", producto_id=prod.id)
                 db.add(ind)
             db.commit()
-        indicadores = list(db.query(IndicadorProducto).limit(10).all())
 
-        # Metas de ejemplo (repartidas en secretarías)
-        if db.query(Meta).count() == 0 and indicadores and secretarias:
-            secretaria_ids = list(secretarias.values())
-            lineas = db.query(LineaEstrategica).all()
-            linea_id = lineas[0].id if lineas else None
-            descripciones = [
-                "Fortalecer la entrega de kits escolares al 100% de estudiantes focalizados.",
-                "Garantizar la cobertura en salud para la población vulnerable.",
-                "Implementar estrategias de convivencia ciudadana.",
-                "Gestionar el talento humano y bienestar laboral.",
-                "Actualizar el plan de ordenamiento territorial.",
-                "Fortalecer la gestión administrativa y financiera.",
-                "Producir y divulgar estadísticas oficiales.",
-                "Implementar soluciones TIC en la administración.",
-                "Apoyar el emprendimiento y desarrollo económico.",
-                "Mejorar la movilidad y seguridad vial.",
-                "Ampliar cobertura de educación inicial.",
-                "Reducir la deserción escolar.",
-                "Promover la participación ciudadana.",
-                "Modernizar la infraestructura institucional.",
-                "Fomentar la cultura y el deporte.",
-            ]
-            for i, desc in enumerate(descripciones):
-                sec_id = secretaria_ids[i % len(secretaria_ids)]
-                ind = indicadores[i % len(indicadores)]
-                valor = (i + 1) * 1000
-                m = Meta(
-                    descripcion=desc,
-                    linea_estrategica_id=linea_id,
-                    secretaria_id=sec_id,
-                    indicador_producto_id=ind.id,
-                    meta_cuatrienio=valor * 4,
-                    valor_esperado_2026=valor,
-                    activo=True,
-                )
-                db.add(m)
-            db.commit()
-            print("Metas de ejemplo OK")
+        # No se insertan metas de ejemplo: las metas se cargan por Excel u otro proceso.
 
         print("\nSeed completado. Usuarios:")
         print("  admin@chinchina.gov.co / admin123 (admin)")

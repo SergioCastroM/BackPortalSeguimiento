@@ -5,8 +5,8 @@ from sqlalchemy.orm import joinedload
 
 from app.db.session import get_db
 from app.core.deps import get_current_user
-from app.models import Meta, Usuario, RolUsuario, SeguimientoMeta, IndicadorProducto, Producto, Programa, Sector
-from app.schemas.meta import MetaDetail, PaginatedMetas
+from app.models import Meta, Usuario, RolUsuario, IndicadorProducto, Producto, Programa, Sector
+from app.schemas.meta import PaginatedMetas
 
 router = APIRouter(prefix="/metas", tags=["metas"])
 
@@ -49,6 +49,20 @@ def list_metas(
         items = [m for m in items if not any(s.anio == anio and s.trimestre == trimestre for s in m.seguimientos)]
     pages = (total + size - 1) // size if total else 0
     return PaginatedMetas(items=items, total=total, page=page, size=size, pages=pages)
+
+
+# Ruta más específica antes que /{meta_id} para evitar ambigüedad en el enrutado.
+@router.get("/{meta_id}/seguimiento")
+def get_meta_seguimiento(
+    meta_id: int,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user),
+):
+    q = _meta_query(db, current_user).filter(Meta.id == meta_id)
+    meta = q.first()
+    if not meta:
+        raise HTTPException(status_code=404, detail="Meta no encontrada")
+    return [{"id": s.id, "trimestre": s.trimestre, "anio": s.anio, "porcentaje_cumplimiento": float(s.porcentaje_cumplimiento or 0), "valor_ejecutado": float(s.valor_ejecutado or 0), "evidencia": s.evidencia, "fecha_registro": s.fecha_registro.isoformat() if s.fecha_registro else None} for s in meta.seguimientos]
 
 
 def _meta_to_detail(meta: Meta) -> dict:
@@ -110,16 +124,3 @@ def get_meta(
     if not meta:
         raise HTTPException(status_code=404, detail="Meta no encontrada")
     return _meta_to_detail(meta)
-
-
-@router.get("/{meta_id}/seguimiento")
-def get_meta_seguimiento(
-    meta_id: int,
-    db: Session = Depends(get_db),
-    current_user: Usuario = Depends(get_current_user),
-):
-    q = _meta_query(db, current_user).filter(Meta.id == meta_id)
-    meta = q.first()
-    if not meta:
-        raise HTTPException(status_code=404, detail="Meta no encontrada")
-    return [{"id": s.id, "trimestre": s.trimestre, "anio": s.anio, "porcentaje_cumplimiento": float(s.porcentaje_cumplimiento or 0), "valor_ejecutado": float(s.valor_ejecutado or 0), "evidencia": s.evidencia, "fecha_registro": s.fecha_registro.isoformat() if s.fecha_registro else None} for s in meta.seguimientos]

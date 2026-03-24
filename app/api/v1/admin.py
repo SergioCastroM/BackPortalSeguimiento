@@ -6,7 +6,17 @@ from pydantic import BaseModel, EmailStr
 from app.db.session import get_db
 from app.core.deps import get_current_user, require_admin
 from sqlalchemy import func
-from app.models import Usuario, Secretaria, Meta, PeriodoSeguimiento, EstadoPeriodo
+from app.models import (
+    Usuario,
+    Secretaria,
+    Meta,
+    PeriodoSeguimiento,
+    EstadoPeriodo,
+    SeguimientoMeta,
+    ActividadMga,
+    PresupuestoFuente,
+    ProyectoMga,
+)
 from app.core.security import get_password_hash
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -154,3 +164,42 @@ def update_trimestre(periodo_id: int, body: TrimestreUpdate, db: Session = Depen
         p.estado = EstadoPeriodo(body.estado)
     db.commit()
     return {"message": "Período actualizado"}
+
+
+class PurgeMetasResponse(BaseModel):
+    eliminados_seguimientos: int
+    eliminadas_actividades: int
+    eliminados_presupuestos_fuente: int
+    eliminados_proyectos_mga: int
+    eliminadas_metas: int
+
+
+@router.delete("/metas/todas", response_model=PurgeMetasResponse)
+def delete_all_metas_y_seguimientos(
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_admin),
+):
+    """
+    Elimina todas las metas y datos dependientes: seguimientos, proyectos MGA,
+    actividades y presupuestos por fuente. Operación irreversible (solo administrador).
+    """
+    try:
+        n_seg = db.query(SeguimientoMeta).delete(synchronize_session=False)
+        n_act = db.query(ActividadMga).delete(synchronize_session=False)
+        n_pres = db.query(PresupuestoFuente).delete(synchronize_session=False)
+        n_proj = db.query(ProyectoMga).delete(synchronize_session=False)
+        n_meta = db.query(Meta).delete(synchronize_session=False)
+        db.commit()
+        return PurgeMetasResponse(
+            eliminados_seguimientos=n_seg,
+            eliminadas_actividades=n_act,
+            eliminados_presupuestos_fuente=n_pres,
+            eliminados_proyectos_mga=n_proj,
+            eliminadas_metas=n_meta,
+        )
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudo completar la eliminación. Revise restricciones de la base de datos o los logs del servidor.",
+        )

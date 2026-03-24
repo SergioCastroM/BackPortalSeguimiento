@@ -1,12 +1,18 @@
 import uuid
-from collections import Counter
+from collections import defaultdict
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.core.deps import require_admin
 from app.models import Usuario
-from app.services.excel_importer import parse_excel, run_import
+from app.services.excel_importer import (
+    parse_excel,
+    run_import,
+    replace_sectors_catalog,
+    normalize_secretaria_key,
+    normalize_secretaria_title_for_display,
+)
 
 router = APIRouter(prefix="/excel", tags=["excel"])
 
@@ -30,9 +36,43 @@ async def upload_excel(
         preview, filas, warnings = parse_excel(content)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error al leer el Excel: {e!s}")
-    # Contar metas por secretaría/oficina (nombre normalizado)
-    oficinas = [f.get("oficina") or "(Sin oficina)" for f in filas]
-    metas_por_secretaria = [{"oficina": nombre, "cantidad": count} for nombre, count in sorted(Counter(oficinas).items(), key=lambda x: -x[1])]
+    # Agrupar por clave normalizada para no duplicar filas por mayúsculas/minúsculas distintas
+    grupos: dict[str, dict] = defaultdict(lambda: {"cantidad": 0, "label": ""})
+    for f in filas:
+        raw = (f.get("oficina") or "").strip()
+        k = normalize_secretaria_key(raw)
+        label = normalize_secretaria_title_for_display(raw) if raw else "(Sin oficina)"
+        if not grupos[k]["label"]:
+            grupos[k]["label"] = label
+        grupos[k]["cantidad"] += 1
+    metas_por_secretaria = [
+        {"oficina": grupos[k]["label"], "cantidad": grupos[k]["cantidad"]}
+        for k in sorted(grupos, key=lambda x: -grupos[x]["cantidad"])
+    ]
+    grupos_sec: dict[str, dict] = defaultdict(lambda: {"cantidad": 0, "label": "", "codigo": ""})
+    for f in filas:
+        raw_s = (f.get("sector") or "").strip()
+        raw_c = (f.get("sector_codigo") or "").strip()
+        if not raw_s and not raw_c:
+            continue
+        kn = normalize_secretaria_key(raw_s)
+        kc = normalize_secretaria_key(raw_c)
+        group_key = f"{kc}|{kn}"
+        label_n = normalize_secretaria_title_for_display(raw_s) if raw_s else "(Sin nombre)"
+        codigo_disp = raw_c if raw_c else "—"
+        if not grupos_sec[group_key]["label"]:
+            grupos_sec[group_key]["label"] = label_n
+        if not grupos_sec[group_key]["codigo"]:
+            grupos_sec[group_key]["codigo"] = codigo_disp
+        grupos_sec[group_key]["cantidad"] += 1
+    metas_por_sector = [
+        {
+            "sector": grupos_sec[k]["label"],
+            "codigo": grupos_sec[k]["codigo"],
+            "cantidad": grupos_sec[k]["cantidad"],
+        }
+        for k in sorted(grupos_sec, key=lambda x: -grupos_sec[x]["cantidad"])
+    ]
     job_id = str(uuid.uuid4())
     new_count = len(filas)
     resumen = {"new": new_count, "update": 0, "errors": 0}
@@ -43,6 +83,7 @@ async def upload_excel(
         "resumen": resumen,
         "warnings": warnings,
         "metas_por_secretaria": metas_por_secretaria,
+        "metas_por_sector": metas_por_sector,
     }
 
 
@@ -58,6 +99,24 @@ def confirm_import(
     filas = data.get("filas") or []
     inserted, updated, errors = run_import(db, filas)
     return {"message": "Importación completada", "inserted": inserted, "updated": updated, "errors": errors}
+
+
+@router.post("/replace-sectors/{job_id}")
+def replace_sectors_from_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_admin),
+):
+    """
+    Sustituye el catálogo de sectores por los únicos del Excel del job.
+    Elimina metas, seguimientos, proyectos MGA y la cadena programa/producto/indicador previa.
+    """
+    if job_id not in _upload_preview:
+        raise HTTPException(status_code=404, detail="Job no encontrado o expirado")
+    data = _upload_preview[job_id]
+    filas = data.get("filas") or []
+    result = replace_sectors_catalog(db, filas)
+    return result
 
 
 @router.get("/logs")

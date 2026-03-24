@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     FRONTEND_URL: str = "http://localhost:5173"
+    # Orígenes CORS extra (coma-separados). Útil en producción: URL exacta del front en Azure SWA u otro host.
+    # Ej: https://mi-app.azurestaticapps.net,https://www.dominio.com
+    CORS_ORIGINS_EXTRA: str = ""
 
     class Config:
         env_file = str(_ENV_FILE) if _ENV_FILE.exists() else ".env"
