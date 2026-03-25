@@ -11,6 +11,11 @@ Formato habitual municipal:
   - F: Código del sector
   - G: Nombre del sector
 
+Columnas MGA/BPIN (si existen en el archivo, por encabezado):
+  - Código BPIN - Nacional / BPIN Nacional / código BPIN, etc.
+  - Valor inicial, Adición(es), Deducción(es) / Reducción(es), Valor final
+  - Nombre proyecto / proyecto MGA (opcional)
+
 Las columnas se resuelven por encabezado; si no hay encabezados claros y hay suficientes
 columnas, por defecto F=índice 5 (código) y G=índice 6 (nombre).
 """
@@ -39,6 +44,7 @@ from app.models import (
     ActividadMga,
     PresupuestoFuente,
 )
+from app.services.proyecto_mga_service import recalcular_valor_final
 
 
 # Valores por defecto si no hay encabezado reconocible (índices 0-based)
@@ -62,6 +68,12 @@ class ExcelColumnMap:
     idx_secretaria: int
     idx_descripcion: int
     idx_valor_2026: int | None
+    idx_codigo_bpin: int | None
+    idx_valor_inicial: int | None
+    idx_adicion: int | None
+    idx_reduccion: int | None
+    idx_valor_final: int | None
+    idx_nombre_proyecto: int | None
 
 
 # Artículos/preposiciones comunes en nombres de secretarías (título legible)
@@ -138,6 +150,59 @@ def _header_es_nombre_sector(nk: str) -> bool:
     return False
 
 
+def _header_es_bpin(nk: str) -> bool:
+    """Encabezados tipo «Código BPIN - Nacional», «BPIN Nacional», etc."""
+    if not nk or _header_es_codigo_sector(nk):
+        return False
+    if "bpin" not in nk:
+        return False
+    if "nacional" in nk:
+        return True
+    if "codigo" in nk or nk.startswith("codigo"):
+        return True
+    if nk == "bpin" or nk.startswith("bpin "):
+        return True
+    return False
+
+
+def _header_es_valor_inicial(nk: str) -> bool:
+    return bool(nk) and "valor" in nk and "inicial" in nk
+
+
+def _header_es_valor_final_mga(nk: str) -> bool:
+    """Valor final presupuestal MGA (no confundir con «valor ejecutado»)."""
+    if not nk or "valor" not in nk or "final" not in nk:
+        return False
+    if "ejecut" in nk:
+        return False
+    return True
+
+
+def _header_es_adicion(nk: str) -> bool:
+    return bool(nk) and ("adicion" in nk or "adiciones" in nk)
+
+
+def _header_es_reduccion(nk: str) -> bool:
+    return bool(nk) and (
+        "deduccion" in nk
+        or "deducciones" in nk
+        or "reduccion" in nk
+        or "reducciones" in nk
+    )
+
+
+def _header_es_nombre_proyecto(nk: str) -> bool:
+    if not nk:
+        return False
+    if "proyecto" in nk and "nombre" in nk:
+        return True
+    if nk in ("proyecto mga", "proyecto", "nombre proyecto"):
+        return True
+    if nk.startswith("proyecto ") and "bpin" not in nk:
+        return True
+    return False
+
+
 def _detect_excel_columns(df: pd.DataFrame) -> tuple[ExcelColumnMap, list[str]]:
     """
     Resuelve columnas por encabezado. La columna A suele ser Plan de desarrollo, no sector.
@@ -172,6 +237,12 @@ def _detect_excel_columns(df: pd.DataFrame) -> tuple[ExcelColumnMap, list[str]]:
                 return i
         if n > DEFAULT_COL_META_2026:
             return DEFAULT_COL_META_2026
+        return None
+
+    def pick_optional(match_fn) -> int | None:
+        for i, nk in enumerate(norms):
+            if match_fn(nk):
+                return i
         return None
 
     idx_sec_cod: int | None = None
@@ -220,6 +291,20 @@ def _detect_excel_columns(df: pd.DataFrame) -> tuple[ExcelColumnMap, list[str]]:
             "No se encontró encabezado de código de sector; se asume la columna F (índice 5)."
         )
 
+    mga_cols = (
+        pick_optional(_header_es_bpin),
+        pick_optional(_header_es_valor_inicial),
+        pick_optional(_header_es_adicion),
+        pick_optional(_header_es_reduccion),
+        pick_optional(_header_es_valor_final_mga),
+        pick_optional(_header_es_nombre_proyecto),
+    )
+    if any(c is not None for c in mga_cols):
+        extra.append(
+            "Se detectaron columnas MGA/BPIN (valor inicial, final, adiciones, deducciones y/o código BPIN nacional). "
+            "Se vincularán al proyecto MGA de cada meta al confirmar la importación."
+        )
+
     return (
         ExcelColumnMap(
             idx_sector=idx_sec,
@@ -227,6 +312,12 @@ def _detect_excel_columns(df: pd.DataFrame) -> tuple[ExcelColumnMap, list[str]]:
             idx_secretaria=pick_secretaria(),
             idx_descripcion=pick_descripcion(),
             idx_valor_2026=pick_valor_2026(),
+            idx_codigo_bpin=mga_cols[0],
+            idx_valor_inicial=mga_cols[1],
+            idx_adicion=mga_cols[2],
+            idx_reduccion=mga_cols[3],
+            idx_valor_final=mga_cols[4],
+            idx_nombre_proyecto=mga_cols[5],
         ),
         extra,
     )
@@ -236,6 +327,61 @@ def _normalize_name(name: Any) -> str:
     if name is None or (isinstance(name, float) and pd.isna(name)):
         return ""
     return str(name).strip()
+
+
+def _cell_float(row: pd.Series, idx: int | None) -> float:
+    if idx is None or len(row) <= idx:
+        return 0.0
+    v = row.iloc[idx]
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return 0.0
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _sync_proyecto_mga_for_meta(db: Session, meta: Meta, f: dict) -> None:
+    """
+    Crea o actualiza un ProyectoMga por meta a partir de filas del Excel (BPIN, valores MGA).
+    """
+    bpin = (f.get("codigo_bpin") or "").strip()[:50]
+    nombre_proy = (f.get("nombre_proyecto") or "").strip()[:500]
+    vi = float(f.get("valor_inicial") or 0)
+    ad = float(f.get("adicion") or 0)
+    red = float(f.get("reduccion") or 0)
+    has = bool(bpin) or vi != 0 or ad != 0 or red != 0 or bool(nombre_proy)
+    if not has:
+        return
+    p = db.query(ProyectoMga).filter(ProyectoMga.meta_id == meta.id).first()
+    default_nombre = nombre_proy or (
+        f"BPIN {bpin}" if bpin else ((meta.descripcion or "")[:200] or "Proyecto MGA")
+    )
+    if p:
+        if bpin:
+            p.codigo_bpin = bpin
+        p.valor_inicial = Decimal(str(vi))
+        p.adicion = Decimal(str(ad))
+        p.reduccion = Decimal(str(red))
+        recalcular_valor_final(p)
+        if nombre_proy:
+            p.nombre = nombre_proy
+        elif not (p.nombre or "").strip():
+            p.nombre = default_nombre
+    else:
+        np = ProyectoMga(
+            meta_id=meta.id,
+            codigo_bpin=bpin or None,
+            nombre=default_nombre,
+            valor_inicial=Decimal(str(vi)),
+            adicion=Decimal(str(ad)),
+            reduccion=Decimal(str(red)),
+            valor_final=Decimal(0),
+        )
+        db.add(np)
+        db.flush()
+        recalcular_valor_final(np)
+    db.flush()
 
 
 def _indicador_por_sector_key(db: Session) -> dict[str, int]:
@@ -343,6 +489,13 @@ def parse_excel(content: bytes) -> tuple[list[dict], list[dict], list[str]]:
             except (TypeError, ValueError):
                 pass
 
+        codigo_bpin = _cell(row, cmap.idx_codigo_bpin)
+        nombre_proyecto = _cell(row, cmap.idx_nombre_proyecto)
+        valor_inicial = _cell_float(row, cmap.idx_valor_inicial)
+        adicion = _cell_float(row, cmap.idx_adicion)
+        reduccion = _cell_float(row, cmap.idx_reduccion)
+        valor_final = _cell_float(row, cmap.idx_valor_final)
+
         if not desc:
             continue
         oficina_key = normalize_secretaria_key(oficina)
@@ -358,6 +511,12 @@ def parse_excel(content: bytes) -> tuple[list[dict], list[dict], list[str]]:
                 "oficina_key": oficina_key,
                 "descripcion": desc[:2000],
                 "valor_esperado_2026": valor_2026,
+                "codigo_bpin": codigo_bpin[:50] if codigo_bpin else "",
+                "nombre_proyecto": nombre_proyecto[:500] if nombre_proyecto else "",
+                "valor_inicial": valor_inicial,
+                "adicion": adicion,
+                "reduccion": reduccion,
+                "valor_final": valor_final,
             }
         )
         if len(preview) < MAX_PREVIEW_ROWS:
@@ -373,6 +532,11 @@ def parse_excel(content: bytes) -> tuple[list[dict], list[dict], list[str]]:
                     "Secretaría": sec_label,
                     "Meta": desc[:80] + ("..." if len(desc) > 80 else ""),
                     "Valor 2026": valor_2026,
+                    "BPIN": codigo_bpin or "—",
+                    "V. inicial": valor_inicial,
+                    "Adición": adicion,
+                    "Deducción": reduccion,
+                    "V. final": valor_final,
                 }
             )
 
@@ -446,6 +610,7 @@ def run_import(db: Session, filas: list[dict], linea_id: int | None = None) -> t
                 existing.meta_cuatrienio = Decimal(str(valor_2026 * 4))
                 existing.indicador_producto_id = indicador_id
                 db.flush()
+                _sync_proyecto_mga_for_meta(db, existing, f)
                 updated += 1
             else:
                 meta = Meta(
@@ -458,6 +623,8 @@ def run_import(db: Session, filas: list[dict], linea_id: int | None = None) -> t
                     activo=True,
                 )
                 db.add(meta)
+                db.flush()
+                _sync_proyecto_mga_for_meta(db, meta, f)
                 inserted += 1
         except Exception:
             errors += 1

@@ -1,14 +1,28 @@
-from decimal import Decimal
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_
 
-from app.models import Meta, SeguimientoMeta, Usuario, PeriodoSeguimiento, EstadoPeriodo
+from app.models import Usuario, PeriodoSeguimiento, EstadoPeriodo
 
 
-def calcular_porcentaje(valor_ejecutado: float, valor_esperado_2026: float) -> float:
-    if valor_esperado_2026 == 0:
+def calcular_porcentaje(valor_ejecutado: float, referencia: float) -> float:
+    """(ejecutado / referencia) * 100. Si referencia es 0, devuelve 0."""
+    if referencia == 0:
         return 0.0
-    return round((float(valor_ejecutado) / float(valor_esperado_2026)) * 100, 2)
+    return round((float(valor_ejecutado) / float(referencia)) * 100, 2)
+
+
+def denominador_cumplimiento_seguimiento(db: Session, meta_id: int, valor_esperado_meta: float) -> float:
+    """
+    Prioriza el valor final MGA (inicial + adiciones − disminuciones) del primer proyecto;
+    si no hay proyecto o valor_final es 0, usa valor esperado 2026 de la meta.
+    """
+    from app.services.proyecto_mga_service import primer_proyecto_mga
+
+    p = primer_proyecto_mga(db, meta_id)
+    if p is not None:
+        vf = float(p.valor_final or 0)
+        if vf > 0:
+            return vf
+    return float(valor_esperado_meta or 0)
 
 
 def trimestre_abierto(db: Session, trimestre: int, anio: int) -> bool:

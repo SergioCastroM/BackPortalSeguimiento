@@ -8,6 +8,8 @@ from app.db.session import get_db
 from app.core.deps import get_current_user
 from app.models import Meta, Usuario, RolUsuario, IndicadorProducto, Producto, Programa
 from app.schemas.meta import MetaDetail, PaginatedMetas
+from app.schemas.proyecto_mga import ProyectoMgaMovimientoCreate
+from app.services.proyecto_mga_service import registrar_adicion_o_reduccion
 
 router = APIRouter(prefix="/metas", tags=["metas"])
 
@@ -50,7 +52,16 @@ def _meta_to_detail(meta: Meta) -> dict:
         "secretaria": {"id": meta.secretaria.id, "nombre": meta.secretaria.nombre} if meta.secretaria and getattr(meta.secretaria, "id", None) is not None else None,
         "indicador_producto": indicador_producto,
         "proyectos_mga": [
-            {"id": p.id, "codigo_bpin": p.codigo_bpin, "nombre": p.nombre, "valor_inicial": float(p.valor_inicial or 0), "valor_final": float(p.valor_final or 0), "meta_id": p.meta_id}
+            {
+                "id": p.id,
+                "codigo_bpin": p.codigo_bpin,
+                "nombre": p.nombre,
+                "valor_inicial": float(p.valor_inicial or 0),
+                "adicion": float(p.adicion or 0),
+                "reduccion": float(p.reduccion or 0),
+                "valor_final": float(p.valor_final or 0),
+                "meta_id": p.meta_id,
+            }
             for p in (meta.proyectos_mga or [])
         ],
         "seguimientos": [
@@ -138,6 +149,43 @@ def get_meta_seguimiento(
     if not meta:
         raise HTTPException(status_code=404, detail="Meta no encontrada")
     return [{"id": s.id, "trimestre": s.trimestre, "anio": s.anio, "porcentaje_cumplimiento": float(s.porcentaje_cumplimiento or 0), "valor_ejecutado": float(s.valor_ejecutado or 0), "evidencia": s.evidencia, "fecha_registro": s.fecha_registro.isoformat() if s.fecha_registro else None} for s in meta.seguimientos]
+
+
+@router.post("/{meta_id}/proyecto-mga/movimiento")
+def registrar_movimiento_presupuesto_mga(
+    meta_id: int,
+    body: ProyectoMgaMovimientoCreate,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user),
+):
+    """
+    Registra una adición o disminución (reducción) en el primer proyecto MGA de la meta.
+    valor_final se recalcula: valor_inicial + adiciones − disminuciones.
+    """
+    q = _meta_base_query(db, current_user).filter(Meta.id == meta_id)
+    meta = q.first()
+    if not meta:
+        raise HTTPException(status_code=404, detail="Meta no encontrada")
+    try:
+        p = registrar_adicion_o_reduccion(db, meta_id, body.tipo, body.monto)
+        db.commit()
+        db.refresh(p)
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {
+        "mensaje": "Movimiento registrado. Valor final = valor inicial + adiciones − disminuciones.",
+        "proyecto": {
+            "id": p.id,
+            "codigo_bpin": p.codigo_bpin,
+            "nombre": p.nombre,
+            "valor_inicial": float(p.valor_inicial or 0),
+            "adicion": float(p.adicion or 0),
+            "reduccion": float(p.reduccion or 0),
+            "valor_final": float(p.valor_final or 0),
+            "meta_id": p.meta_id,
+        },
+    }
 
 
 @router.get("/{meta_id}")
