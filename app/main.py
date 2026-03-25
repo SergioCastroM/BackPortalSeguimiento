@@ -6,10 +6,14 @@ from app.api.v1.router import api_router
 
 settings = get_settings()
 
+# SWA de producción (Azure); también configurable con FRONTEND_URL / CORS_ORIGINS_EXTRA.
+_AZURE_SWA_PRODUCTION = "https://lively-meadow-086bce210.1.azurestaticapps.net"
+
 
 def _cors_allow_origins() -> list[str]:
     """Lista de orígenes permitidos (CORS). Sin duplicados."""
     raw = [
+        _AZURE_SWA_PRODUCTION,
         settings.FRONTEND_URL,
         "http://localhost:3000",
         "http://127.0.0.1:3000",
@@ -21,9 +25,11 @@ def _cors_allow_origins() -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
     for o in raw:
-        if o not in seen:
-            seen.add(o)
-            out.append(o)
+        o = (o or "").strip()
+        if not o or o in seen:
+            continue
+        seen.add(o)
+        out.append(o)
     return out
 
 
@@ -52,6 +58,9 @@ app = FastAPI(
     servers=[{"url": "http://localhost:8001", "description": "Backend local"}],
 )
 
+# CORSMiddleware debe ser la capa exterior: en Starlette el último add_middleware se ejecuta
+# primero en la petición. Si añades más middleware (TrustedHost, GZip, etc.), decláralos
+# *antes* de este bloque para que sigan atendiendo OPTIONS/preflight con cabeceras CORS.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_allow_origins(),
@@ -59,6 +68,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    max_age=600,
 )
 
 app.include_router(api_router, prefix="/api/v1")
