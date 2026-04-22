@@ -162,7 +162,7 @@ def list_metas(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user),
     page: int = Query(1, ge=1),
-    size: int = Query(50, ge=1, le=5000),
+    size: int = Query(50, ge=1, description="Tamaño de página (sin límite superior en la API)."),
     sector_id: Optional[int] = None,
     estado: Optional[str] = None,
     search: Optional[str] = None,
@@ -176,9 +176,6 @@ def list_metas(
 ):
     if secretaria_id is not None and current_user.rol != RolUsuario.admin:
         raise HTTPException(status_code=403, detail="Solo administradores pueden filtrar por secretaría.")
-
-    max_page_size = 5000 if current_user.rol == RolUsuario.admin else 100
-    size = min(size, max_page_size)
 
     def base_filtered():
         q = _apply_meta_list_filters(_meta_base_query(db, current_user), sector_id, search)
