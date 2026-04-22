@@ -99,7 +99,8 @@ def _apply_meta_list_filters(q, sector_id: Optional[int], search: Optional[str])
             .filter(Programa.sector_id == sector_id)
         )
     if search:
-        q = q.filter(Meta.descripcion.ilike(f"%{search}%"))
+        pat = f"%{search.strip()}%"
+        q = q.filter(func.lower(Meta.descripcion).like(func.lower(pat)))
     return q
 
 

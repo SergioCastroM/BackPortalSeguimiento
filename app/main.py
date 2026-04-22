@@ -4,6 +4,7 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from app.api.v1.router import api_router
 from app.core.config import get_settings
@@ -96,13 +97,21 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     if settings.EXPOSE_INTERNAL_ERRORS:
         msg = str(exc).strip() or repr(exc)
         detail = msg[:4000]
+    elif isinstance(exc, (ProgrammingError, OperationalError)):
+        parts = [str(exc).strip()]
+        orig = getattr(exc, "orig", None)
+        if orig is not None:
+            parts.append(str(orig).strip())
+        merged = " | ".join(p for p in parts if p)
+        if merged:
+            detail = merged[:2000]
     content: dict = {
         "detail": detail,
         "error_type": type(exc).__name__,
         "request_id": req_id,
         "path": str(request.url.path),
     }
-    if not settings.EXPOSE_INTERNAL_ERRORS:
+    if not settings.EXPOSE_INTERNAL_ERRORS and not isinstance(exc, (ProgrammingError, OperationalError)):
         content["hint"] = (
             "Defina EXPOSE_INTERNAL_ERRORS=true en variables de entorno (App Service) o en backend/.env "
             "para incluir el mensaje detallado del error en esta respuesta."
