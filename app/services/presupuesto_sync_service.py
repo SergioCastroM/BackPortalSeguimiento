@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import re
+import unicodedata
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -11,14 +12,20 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.models import IndicadorProducto, Meta, ProyectoMga
-from app.services.proyecto_mga_service import primer_proyecto_mga
+from app.services.proyecto_mga_service import crear_proyecto_mga_minimo_si_falta, primer_proyecto_mga
 
 
 def _norm_header(s: str) -> str:
-    return re.sub(r"[^a-z0-9áéíóúñü]", "", str(s).lower().strip())
+    """
+    Normaliza encabezados: quita acentos (NFD) y deja solo [a-z0-9].
+    Así 'Código meta' y plantillas exportadas desde Excel coinciden con la detección.
+    """
+    t = unicodedata.normalize("NFD", str(s).lower().strip())
+    t = "".join(ch for ch in t if unicodedata.category(ch) != "Mn")
+    return re.sub(r"[^a-z0-9]", "", t)
 
 
-def _detect_columns(columns: list[str]) -> dict[str, str]:
+def _detect_columns(columns: list[str]) -> dict[str, str | None]:
     """Asigna nombre semántico -> nombre de columna original en el DataFrame."""
     by_norm = {_norm_header(c): c for c in columns}
 
@@ -28,10 +35,12 @@ def _detect_columns(columns: list[str]) -> dict[str, str]:
                 return by_norm[cand]
         return None
 
+    # Plantilla exportada por el sistema: Meta ID, Código meta, Valor inicial, …
+    meta_id_col = pick("metaid", "meta_id", "idmeta", "id_meta")
     codigo = (
-        pick("codigometa", "codigodelameta", "codigoindicador")
-        or next((by_norm[k] for k in by_norm if "codigo" in k and "meta" in k), None)
-        or next((by_norm[k] for k in by_norm if k == "codigo" or k.startswith("codigo")), None)
+        pick("codigometa", "codigodelameta", "codigoindicador", "codigo")
+        or next((by_norm[k] for k in by_norm if "codigo" in k and "meta" in k and "descripcion" not in k), None)
+        or next((by_norm[k] for k in by_norm if k == "codigo" or (k.startswith("codigo") and "sector" not in k)), None)
     )
     if codigo and any(x in _norm_header(str(codigo)) for x in ("sector", "bpin")):
         codigo = None
@@ -43,6 +52,7 @@ def _detect_columns(columns: list[str]) -> dict[str, str]:
     )
     ad = (
         pick("adiciones", "adicion", "adicciones")
+        or next((by_norm[k] for k in by_norm if "adicion" in k and "meta" not in k), None)
         or next((by_norm[k] for k in by_norm if "adicion" in k), None)
     )
     ded = (
@@ -53,7 +63,14 @@ def _detect_columns(columns: list[str]) -> dict[str, str]:
         pick("valorfinal", "valfinal")
         or next((by_norm[k] for k in by_norm if "final" in k and "valor" in k), None)
     )
-    return {"codigo": codigo, "valor_inicial": vi, "adiciones": ad, "deducciones": ded, "valor_final": vf}
+    return {
+        "meta_id": meta_id_col,
+        "codigo": codigo,
+        "valor_inicial": vi,
+        "adiciones": ad,
+        "deducciones": ded,
+        "valor_final": vf,
+    }
 
 
 def _to_decimal(val: Any) -> Decimal | None:
@@ -79,22 +96,38 @@ def parse_presupuesto_excel(content: bytes) -> tuple[list[dict[str, Any]], list[
     df = pd.read_excel(io.BytesIO(content), header=0, engine="openpyxl")
     df.columns = [str(c).strip() for c in df.columns]
     mapping = _detect_columns(list(df.columns))
-    missing = [k for k, v in mapping.items() if not v]
+    need_codigo = not mapping.get("meta_id")
+    need_val = ["valor_inicial", "adiciones", "deducciones", "valor_final"]
+    missing = [k for k in need_val if not mapping.get(k)]
+    if need_codigo and not mapping.get("codigo"):
+        missing.insert(0, "codigo (o columna Meta ID)")
     if missing:
         raise ValueError(
             "No se pudieron detectar columnas obligatorias: "
             + ", ".join(missing)
             + f". Columnas encontradas: {list(df.columns)}. "
-            "Use encabezados como: Código meta (o Código), Valor inicial, Adiciones, Deducciones, Valor final."
+            "Use la plantilla exportada desde el sistema o encabezados como: "
+            "Meta ID (opcional), Código meta, Valor inicial, Adiciones, Deducciones, Valor final."
         )
 
     rows: list[dict[str, Any]] = []
     for idx, row in df.iterrows():
-        cod = row.get(mapping["codigo"])
-        if cod is None or (isinstance(cod, float) and pd.isna(cod)):
-            continue
-        cod_s = str(cod).strip()
-        if not cod_s:
+        meta_id_val: int | None = None
+        if mapping.get("meta_id"):
+            raw_mid = row.get(mapping["meta_id"])
+            if raw_mid is not None and not (isinstance(raw_mid, float) and pd.isna(raw_mid)):
+                try:
+                    meta_id_val = int(float(str(raw_mid).strip()))
+                except (ValueError, TypeError):
+                    meta_id_val = None
+
+        cod_s = ""
+        if mapping.get("codigo"):
+            cod = row.get(mapping["codigo"])
+            if cod is not None and not (isinstance(cod, float) and pd.isna(cod)):
+                cod_s = str(cod).strip()
+
+        if meta_id_val is None and not cod_s:
             continue
         vi = _to_decimal(row.get(mapping["valor_inicial"])) or Decimal("0")
         ad = _to_decimal(row.get(mapping["adiciones"])) or Decimal("0")
@@ -106,6 +139,7 @@ def parse_presupuesto_excel(content: bytes) -> tuple[list[dict[str, Any]], list[
         rows.append(
             {
                 "fila_excel": int(idx) + 2,
+                "meta_id": meta_id_val,
                 "codigo": cod_s,
                 "valor_inicial": float(vi),
                 "adiciones": float(ad),
@@ -114,7 +148,7 @@ def parse_presupuesto_excel(content: bytes) -> tuple[list[dict[str, Any]], list[
             }
         )
     if not rows:
-        raise ValueError("No hay filas de datos con código de meta.")
+        raise ValueError("No hay filas de datos con Meta ID o código de meta.")
     return rows, warnings
 
 
@@ -140,8 +174,20 @@ def build_preview(db: Session, rows: list[dict[str, Any]]) -> list[dict[str, Any
     """Enriquece cada fila con estado, valores actuales en BD y mensajes de error."""
     out: list[dict[str, Any]] = []
     for r in rows:
-        codigo = r["codigo"]
-        metas = _metas_por_codigo_indicador(db, codigo)
+        codigo = r.get("codigo") or ""
+        meta_id_excel = r.get("meta_id")
+        meta: Meta | None = None
+        if meta_id_excel is not None:
+            meta = (
+                db.query(Meta)
+                .options(joinedload(Meta.secretaria))
+                .filter(Meta.id == int(meta_id_excel), Meta.activo == True)
+                .first()
+            )
+        if meta is None and codigo:
+            metas = _metas_por_codigo_indicador(db, codigo)
+            if len(metas) == 1:
+                meta = metas[0]
         base = {
             "fila_excel": r.get("fila_excel"),
             "codigo": codigo,
@@ -158,21 +204,24 @@ def build_preview(db: Session, rows: list[dict[str, Any]]) -> list[dict[str, Any
             "valor_final_actual": None,
             "error": None,
             "aviso_formula": None,
+            "aviso_sin_proyecto": None,
         }
-        if len(metas) == 0:
-            base["error"] = "No hay meta activa con ese código de indicador."
+        if meta is None:
+            if meta_id_excel is not None:
+                base["error"] = f"No existe meta activa con Meta ID {meta_id_excel}."
+            elif codigo:
+                metas = _metas_por_codigo_indicador(db, codigo)
+                if len(metas) == 0:
+                    base["error"] = "No hay meta activa con ese código de indicador."
+                else:
+                    base["error"] = f"Hay {len(metas)} metas con el mismo código; debe ser único o use Meta ID."
+            else:
+                base["error"] = "Indique Meta ID o código de indicador."
             out.append(base)
             continue
-        if len(metas) > 1:
-            base["error"] = f"Hay {len(metas)} metas con el mismo código; debe ser único."
-            out.append(base)
-            continue
-        meta = metas[0]
+
         p = primer_proyecto_mga(db, meta.id)
-        if not p:
-            base["error"] = "La meta no tiene proyecto MGA vinculado."
-            out.append(base)
-            continue
+        sin_proyecto = p is None
 
         vi_n, ad_n, ded_n, vf_n = map(
             Decimal,
@@ -188,11 +237,21 @@ def build_preview(db: Session, rows: list[dict[str, Any]]) -> list[dict[str, Any
         base["meta_id"] = meta.id
         base["descripcion"] = (meta.descripcion or "")[:120]
         base["secretaria"] = meta.secretaria.nombre if meta.secretaria else ""
-        base["valor_inicial_actual"] = float(p.valor_inicial or 0)
-        base["adiciones_actual"] = float(p.adicion or 0)
-        base["deducciones_actual"] = float(p.reduccion or 0)
-        base["valor_final_actual"] = float(p.valor_final or 0)
-        base["proyecto_mga_id"] = p.id
+        if sin_proyecto:
+            base["valor_inicial_actual"] = 0.0
+            base["adiciones_actual"] = 0.0
+            base["deducciones_actual"] = 0.0
+            base["valor_final_actual"] = 0.0
+            base["proyecto_mga_id"] = None
+            base["aviso_sin_proyecto"] = (
+                "La meta no tenía proyecto MGA; se creará uno al confirmar la sincronización."
+            )
+        else:
+            base["valor_inicial_actual"] = float(p.valor_inicial or 0)
+            base["adiciones_actual"] = float(p.adicion or 0)
+            base["deducciones_actual"] = float(p.reduccion or 0)
+            base["valor_final_actual"] = float(p.valor_final or 0)
+            base["proyecto_mga_id"] = p.id
         out.append(base)
     return out
 
@@ -200,29 +259,33 @@ def build_preview(db: Session, rows: list[dict[str, Any]]) -> list[dict[str, Any
 def apply_presupuesto_sync(db: Session, preview: list[dict[str, Any]]) -> tuple[int, list[str]]:
     """
     Aplica filas del preview sin error y con proyecto MGA válido.
-    Las filas con error en preview se omiten. Transacción única.
+    Las filas con error en preview se omiten. Si no había proyecto MGA, se crea al aplicar.
+    Transacción única.
     """
-    to_apply: list[tuple[int, dict[str, Any]]] = []
+    to_apply: list[tuple[ProyectoMga, dict[str, Any]]] = []
     for row in preview:
         if row.get("error"):
             continue
-        pid = row.get("proyecto_mga_id")
-        if not pid:
+        mid = row.get("meta_id")
+        if not mid:
             continue
-        p = db.query(ProyectoMga).filter(ProyectoMga.id == pid).first()
+        pid = row.get("proyecto_mga_id")
+        if pid:
+            p = db.query(ProyectoMga).filter(ProyectoMga.id == pid).first()
+        else:
+            meta = db.query(Meta).filter(Meta.id == int(mid), Meta.activo == True).first()
+            if not meta:
+                continue
+            p = crear_proyecto_mga_minimo_si_falta(db, meta)
         if not p:
             continue
-        to_apply.append((pid, row))
+        to_apply.append((p, row))
 
     if not to_apply:
         return 0, ["No hay filas válidas para aplicar. Corrija los errores del preview o suba otro archivo."]
 
     try:
-        for pid, row in to_apply:
-            p = db.query(ProyectoMga).filter(ProyectoMga.id == pid).first()
-            if not p:
-                db.rollback()
-                return 0, [f"Proyecto id {pid} ya no existe; operación cancelada."]
+        for p, row in to_apply:
             p.valor_inicial = Decimal(str(row["valor_inicial_nuevo"]))
             p.adicion = Decimal(str(row["adiciones_nuevo"]))
             p.reduccion = Decimal(str(row["deducciones_nuevo"]))

@@ -9,6 +9,7 @@ from sqlalchemy import func
 from app.models import (
     Usuario,
     Secretaria,
+    Sector,
     Meta,
     PeriodoSeguimiento,
     EstadoPeriodo,
@@ -141,6 +142,13 @@ def list_secretarias(db: Session = Depends(get_db), current_user: Usuario = Depe
         {"id": s.id, "nombre": s.nombre, "tipo": s.tipo.value, "total_metas": counts.get(s.id, 0)}
         for s in db.query(Secretaria).order_by(Secretaria.nombre).all()
     ]
+
+
+@router.get("/sectores")
+def list_sectores_catalog(db: Session = Depends(get_db), current_user: Usuario = Depends(require_admin)):
+    """Catálogo de sectores para filtros en listados admin."""
+    rows = db.query(Sector).order_by(Sector.nombre).all()
+    return [{"id": s.id, "nombre": s.nombre} for s in rows]
 
 
 @router.get("/trimestres")

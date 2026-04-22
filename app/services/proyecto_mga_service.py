@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from app.models import ProyectoMga
+from app.models import Meta, ProyectoMga
 
 
 def primer_proyecto_mga(db: Session, meta_id: int) -> ProyectoMga | None:
@@ -13,6 +13,30 @@ def primer_proyecto_mga(db: Session, meta_id: int) -> ProyectoMga | None:
         .order_by(ProyectoMga.id.asc())
         .first()
     )
+
+
+def crear_proyecto_mga_minimo_si_falta(db: Session, meta: Meta) -> ProyectoMga:
+    """
+    Garantiza un ProyectoMga para la meta (p. ej. sincronización de presupuesto sin import previo).
+    Si ya existe, devuelve el primero por id.
+    """
+    p = primer_proyecto_mga(db, meta.id)
+    if p:
+        return p
+    nombre = ((meta.descripcion or "").strip()[:500]) or f"Proyecto MGA meta #{meta.id}"
+    np = ProyectoMga(
+        meta_id=meta.id,
+        codigo_bpin=None,
+        nombre=nombre,
+        valor_inicial=Decimal("0"),
+        adicion=Decimal("0"),
+        reduccion=Decimal("0"),
+        valor_final=Decimal("0"),
+    )
+    db.add(np)
+    db.flush()
+    recalcular_valor_final(np)
+    return np
 
 
 def recalcular_valor_final(p: ProyectoMga) -> None:
