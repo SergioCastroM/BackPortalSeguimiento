@@ -1,10 +1,15 @@
-from fastapi import FastAPI
+import logging
+import uuid
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
-from app.core.config import get_settings
+from fastapi.responses import JSONResponse, RedirectResponse
+
 from app.api.v1.router import api_router
+from app.core.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger("app.main")
 
 # SWA de producción (Azure); también configurable con FRONTEND_URL / CORS_ORIGINS_EXTRA.
 _AZURE_SWA_PRODUCTION = "https://lively-meadow-086bce210.1.azurestaticapps.net"
@@ -72,6 +77,37 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api/v1")
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """
+    Evita la respuesta plana 'Internal Server Error' de Starlette: devuelve JSON con tipo y,
+    si EXPOSE_INTERNAL_ERRORS=true, el mensaje del error (útil en Postman/Azure). Trace completo en logs.
+    """
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+
+    if isinstance(exc, StarletteHTTPException):
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    req_id = str(uuid.uuid4())[:12]
+    logger.exception("Error no controlado [%s] %s %s", req_id, request.method, request.url.path)
+    detail = "Error interno del servidor."
+    if settings.EXPOSE_INTERNAL_ERRORS:
+        msg = str(exc).strip() or repr(exc)
+        detail = msg[:4000]
+    content: dict = {
+        "detail": detail,
+        "error_type": type(exc).__name__,
+        "request_id": req_id,
+        "path": str(request.url.path),
+    }
+    if not settings.EXPOSE_INTERNAL_ERRORS:
+        content["hint"] = (
+            "Defina EXPOSE_INTERNAL_ERRORS=true en variables de entorno (App Service) o en backend/.env "
+            "para incluir el mensaje detallado del error en esta respuesta."
+        )
+    return JSONResponse(status_code=500, content=content)
 
 
 @app.get("/")

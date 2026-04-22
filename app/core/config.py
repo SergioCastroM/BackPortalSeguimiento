@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     # Orígenes CORS extra (coma-separados). Útil en producción: URL exacta del front en Azure SWA u otro host.
     # Ej: https://mi-app.azurestaticapps.net,https://www.dominio.com
     CORS_ORIGINS_EXTRA: str = ""
+    # Si es True, las respuestas 500 JSON incluyen el mensaje del error (útil al depurar en Azure). Desactivar en producción estable.
+    EXPOSE_INTERNAL_ERRORS: bool = False
 
     class Config:
         env_file = str(_ENV_FILE) if _ENV_FILE.exists() else ".env"
