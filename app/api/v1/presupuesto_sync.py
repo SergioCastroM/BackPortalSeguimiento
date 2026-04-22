@@ -1,12 +1,16 @@
 """Admin: sincronización de presupuesto MGA desde Excel (vista previa + confirmación)."""
+import io
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from sqlalchemy.orm import Session
+from fastapi.responses import StreamingResponse
+from openpyxl import Workbook
+from openpyxl.styles import Font
+from sqlalchemy.orm import Session, joinedload
 
 from app.db.session import get_db
 from app.core.deps import require_admin
-from app.models import Usuario
+from app.models import Meta, Usuario
 from app.services.presupuesto_sync_service import (
     apply_presupuesto_sync,
     build_preview,
@@ -17,6 +21,68 @@ router = APIRouter(prefix="/admin/presupuesto-sync", tags=["admin"])
 
 _jobs: dict[str, dict] = {}
 MAX_FILE_BYTES = 10 * 1024 * 1024
+
+
+@router.get("/template")
+def presupuesto_sync_template(
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_admin),
+):
+    metas = (
+        db.query(Meta)
+        .filter(Meta.activo == True)
+        .options(joinedload(Meta.secretaria), joinedload(Meta.indicador_producto))
+        .order_by(Meta.secretaria_id, Meta.id)
+        .all()
+    )
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Plantilla presupuesto"
+    headers = [
+        "Meta ID",
+        "Indicador ID",
+        "Código meta",
+        "Meta descripción",
+        "Secretaría",
+        "Valor inicial",
+        "Adiciones",
+        "Deducciones",
+        "Valor final",
+    ]
+    ws.append(headers)
+    for c in ws[1]:
+        c.font = Font(bold=True)
+
+    for m in metas:
+        ind = m.indicador_producto
+        ws.append(
+            [
+                m.id,
+                ind.id if ind else "",
+                (ind.codigo if ind else "") or "",
+                (m.descripcion or "")[:350],
+                m.secretaria.nombre if m.secretaria else "",
+                "",
+                "",
+                "",
+                "",
+            ]
+        )
+
+    widths = [10, 12, 18, 52, 28, 16, 14, 14, 16]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="plantilla-presupuesto-sync.xlsx"'},
+    )
 
 
 @router.post("/upload")
