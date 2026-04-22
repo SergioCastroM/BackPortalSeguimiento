@@ -1,8 +1,8 @@
-from typing import Literal, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import Numeric, and_, asc, case, cast, desc, distinct, func, literal
-from sqlalchemy.orm import Session, aliased, joinedload
+from sqlalchemy.orm import Session, aliased, joinedload, selectinload
 
 from app.db.session import get_db
 from app.core.deps import get_current_user
@@ -109,8 +109,9 @@ def _meta_query(db: Session, user: Usuario):
         joinedload(Meta.linea_estrategica),
         joinedload(Meta.secretaria),
         joinedload(Meta.indicador_producto).joinedload(IndicadorProducto.producto).joinedload(Producto.programa).joinedload(Programa.sector),
-        joinedload(Meta.proyectos_mga),
-        joinedload(Meta.seguimientos),
+        # Colecciones: selectinload evita JOIN+cartesiano con LIMIT (SQLAlchemy 2 / Postgres en Azure).
+        selectinload(Meta.proyectos_mga),
+        selectinload(Meta.seguimientos),
     )
 
 
@@ -170,7 +171,7 @@ def list_metas(
         description="Solo metas con ejecución acumulada 2026 mayor al presupuesto de referencia (valor final MGA o valor esperado 2026).",
     ),
     sort_by: str = Query("id", description="id, secretaria, sector, meta_2026, valor_final, valor_ejecutado, pct_ejecucion"),
-    sort_dir: Literal["asc", "desc"] = Query("asc", description="asc o desc"),
+    sort_dir: str = Query("asc", description="asc o desc"),
 ):
     if secretaria_id is not None and current_user.rol != RolUsuario.admin:
         raise HTTPException(status_code=403, detail="Solo administradores pueden filtrar por secretaría.")
@@ -184,7 +185,10 @@ def list_metas(
     sort_key = (sort_by or "id").lower()
     if sort_key not in _SORT_KEYS:
         sort_key = "id"
-    ascending = (sort_dir or "asc").lower() == "asc"
+    sd = (sort_dir or "asc").lower()
+    if sd not in ("asc", "desc"):
+        sd = "asc"
+    ascending = sd == "asc"
 
     pm_sq = _first_pm_subq(db)
     ej_sq = _ejecutado_anio_subq(db)
@@ -216,8 +220,8 @@ def list_metas(
         joinedload(Meta.linea_estrategica),
         joinedload(Meta.secretaria),
         joinedload(Meta.indicador_producto).joinedload(IndicadorProducto.producto).joinedload(Producto.programa).joinedload(Programa.sector),
-        joinedload(Meta.proyectos_mga),
-        joinedload(Meta.seguimientos),
+        selectinload(Meta.proyectos_mga),
+        selectinload(Meta.seguimientos),
     )
     order_cols: list = []
     if need_metrics:
