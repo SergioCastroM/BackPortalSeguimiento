@@ -1,0 +1,73 @@
+"""Admin: sincronización de presupuesto MGA desde Excel (vista previa + confirmación)."""
+import uuid
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from sqlalchemy.orm import Session
+
+from app.db.session import get_db
+from app.core.deps import require_admin
+from app.models import Usuario
+from app.services.presupuesto_sync_service import (
+    apply_presupuesto_sync,
+    build_preview,
+    parse_presupuesto_excel,
+)
+
+router = APIRouter(prefix="/admin/presupuesto-sync", tags=["admin"])
+
+_jobs: dict[str, dict] = {}
+MAX_FILE_BYTES = 10 * 1024 * 1024
+
+
+@router.post("/upload")
+async def presupuesto_sync_upload(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_admin),
+):
+    if not file.filename or not file.filename.endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="Solo se aceptan archivos .xlsx")
+    content = await file.read()
+    if len(content) > MAX_FILE_BYTES:
+        raise HTTPException(status_code=400, detail="Archivo demasiado grande (máx. 10 MB)")
+    try:
+        rows, parse_warnings = parse_presupuesto_excel(content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    preview = build_preview(db, rows)
+    err_count = sum(1 for r in preview if r.get("error"))
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = {"rows": rows}
+    return {
+        "job_id": job_id,
+        "preview": preview,
+        "resumen": {
+            "filas": len(preview),
+            "validas": len(preview) - err_count,
+            "con_error": err_count,
+        },
+        "warnings": parse_warnings,
+    }
+
+
+@router.post("/confirm/{job_id}")
+def presupuesto_sync_confirm(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_admin),
+):
+    if job_id not in _jobs:
+        raise HTTPException(status_code=404, detail="Sesión de sincronización no encontrada o expirada. Vuelva a subir el archivo.")
+    data = _jobs[job_id]
+    rows = data.get("rows") or []
+    preview = build_preview(db, rows)
+    n, errs = apply_presupuesto_sync(db, preview)
+    if n == 0 and errs:
+        raise HTTPException(status_code=400, detail="; ".join(errs))
+    _jobs.pop(job_id, None)
+    return {
+        "actualizados": n,
+        "mensaje": f"Se actualizaron {n} proyecto(s) MGA con los valores del Excel.",
+        "advertencias": errs,
+    }
