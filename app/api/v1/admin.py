@@ -1,7 +1,8 @@
+from datetime import date
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 from app.db.session import get_db
 from app.core.deps import get_current_user, require_admin
@@ -157,6 +158,94 @@ def list_trimestres(db: Session = Depends(get_db), current_user: Usuario = Depen
         {"id": p.id, "anio": p.anio, "trimestre": p.trimestre, "estado": p.estado.value, "fecha_limite": str(p.fecha_limite) if p.fecha_limite else None}
         for p in db.query(PeriodoSeguimiento).order_by(PeriodoSeguimiento.anio, PeriodoSeguimiento.trimestre).all()
     ]
+
+
+def _periodo_to_dict(p: PeriodoSeguimiento) -> dict:
+    return {
+        "id": p.id,
+        "anio": p.anio,
+        "trimestre": p.trimestre,
+        "estado": p.estado.value,
+        "fecha_limite": str(p.fecha_limite) if p.fecha_limite else None,
+    }
+
+
+class TrimestreCreate(BaseModel):
+    anio: int = Field(..., ge=2000, le=2100)
+    trimestre: int = Field(..., ge=1, le=4)
+    estado: str = "abierto"
+    fecha_limite: Optional[date] = None
+
+
+@router.post("/trimestres", status_code=201)
+def create_trimestre(
+    body: TrimestreCreate,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_admin),
+):
+    if body.estado not in ("abierto", "cerrado", "proximo"):
+        raise HTTPException(status_code=400, detail="Estado inválido. Use: abierto, cerrado o proximo.")
+    exists = (
+        db.query(PeriodoSeguimiento)
+        .filter(PeriodoSeguimiento.anio == body.anio, PeriodoSeguimiento.trimestre == body.trimestre)
+        .first()
+    )
+    if exists:
+        raise HTTPException(status_code=400, detail="Ya existe un período para ese año y trimestre.")
+    p = PeriodoSeguimiento(
+        anio=body.anio,
+        trimestre=body.trimestre,
+        estado=EstadoPeriodo(body.estado),
+        fecha_limite=body.fecha_limite,
+    )
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    return _periodo_to_dict(p)
+
+
+_FECHA_LIMITE_TRIMESTRE = {
+    1: (3, 31),
+    2: (6, 30),
+    3: (9, 30),
+    4: (12, 31),
+}
+
+
+@router.post("/trimestres/completar-anio/{anio}")
+def completar_trimestres_anio(
+    anio: int,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_admin),
+):
+    """
+    Crea T1–T4 del año si faltan (fecha límite típica fin de trimestre).
+    Los nuevos quedan en estado «proximo»; puede abrirlos después sin cerrar otros.
+    """
+    if anio < 2000 or anio > 2100:
+        raise HTTPException(status_code=400, detail="Año fuera de rango.")
+    creados: List[PeriodoSeguimiento] = []
+    for t in (1, 2, 3, 4):
+        existe = (
+            db.query(PeriodoSeguimiento)
+            .filter(PeriodoSeguimiento.anio == anio, PeriodoSeguimiento.trimestre == t)
+            .first()
+        )
+        if existe:
+            continue
+        mes, dia = _FECHA_LIMITE_TRIMESTRE[t]
+        p = PeriodoSeguimiento(
+            anio=anio,
+            trimestre=t,
+            estado=EstadoPeriodo.proximo,
+            fecha_limite=date(anio, mes, dia),
+        )
+        db.add(p)
+        creados.append(p)
+    db.commit()
+    for p in creados:
+        db.refresh(p)
+    return {"creados": len(creados), "periodos": [_periodo_to_dict(p) for p in creados]}
 
 
 class TrimestreUpdate(BaseModel):

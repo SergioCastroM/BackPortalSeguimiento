@@ -110,21 +110,29 @@ def seed():
         db.commit()
         print("Usuarios OK")
 
-        # Período activo: T1 2026 abierto
-        periodo = db.query(PeriodoSeguimiento).filter(
-            PeriodoSeguimiento.anio == 2026,
-            PeriodoSeguimiento.trimestre == 1,
-        ).first()
-        if not periodo:
-            periodo = PeriodoSeguimiento(
-                anio=2026,
-                trimestre=1,
-                estado=EstadoPeriodo.abierto,
-                fecha_limite=date(2026, 3, 31),
-            )
-            db.add(periodo)
-            db.commit()
-        print("Período T1 2026 OK")
+        # Períodos 2026: T1 abierto; T2–T4 próximos (el admin puede abrir varios a la vez)
+        fechas_t = {
+            1: date(2026, 3, 31),
+            2: date(2026, 6, 30),
+            3: date(2026, 9, 30),
+            4: date(2026, 12, 31),
+        }
+        for t in (1, 2, 3, 4):
+            ya = db.query(PeriodoSeguimiento).filter(
+                PeriodoSeguimiento.anio == 2026,
+                PeriodoSeguimiento.trimestre == t,
+            ).first()
+            if not ya:
+                db.add(
+                    PeriodoSeguimiento(
+                        anio=2026,
+                        trimestre=t,
+                        estado=EstadoPeriodo.abierto if t == 1 else EstadoPeriodo.proximo,
+                        fecha_limite=fechas_t[t],
+                    )
+                )
+        db.commit()
+        print("Períodos T1–T4 2026 OK (T1 abierto; T2–T4 próximos si se crearon)")
 
         # Sectores, programas, productos e indicadores (para que haya metas con estructura)
         sector = db.query(Sector).first()
