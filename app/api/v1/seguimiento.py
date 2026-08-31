@@ -23,7 +23,7 @@ def create_seguimiento(
     current_user: Usuario = Depends(get_current_user),
 ):
     if current_user.rol == RolUsuario.secretaria and not puede_crear_editar_seguimiento(db, current_user, body.trimestre, body.anio):
-        raise HTTPException(status_code=400, detail="El trimestre no está abierto para registro.")
+        raise HTTPException(status_code=400, detail="El período no está abierto para registro.")
     meta = db.query(Meta).filter(Meta.id == body.meta_id).first()
     if not meta:
         raise HTTPException(status_code=404, detail="Meta no encontrada")
@@ -82,7 +82,7 @@ def update_seguimiento(
     if current_user.rol == RolUsuario.secretaria and meta.secretaria_id != current_user.secretaria_id:
         raise HTTPException(status_code=403, detail="No puede editar este seguimiento.")
     if current_user.rol == RolUsuario.secretaria and not puede_crear_editar_seguimiento(db, current_user, seg.trimestre, seg.anio):
-        raise HTTPException(status_code=400, detail="El trimestre está cerrado.")
+        raise HTTPException(status_code=400, detail="El período está cerrado.")
     changed_monto = False
     if body.recursos_ejecutados is not None:
         seg.recursos_ejecutados = body.recursos_ejecutados

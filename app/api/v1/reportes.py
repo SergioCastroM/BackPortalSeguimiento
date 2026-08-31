@@ -12,6 +12,7 @@ from app.services.reportes_excel import (
     build_reporte_sector_excel,
     build_reporte_total_excel,
 )
+from app.services.periodo_config import etiqueta_periodo, get_tipo_periodo
 
 router = APIRouter(prefix="/reportes", tags=["reportes"])
 
@@ -35,7 +36,8 @@ def reporte_secretaria(
     formato: str = Query("xlsx"),
 ):
     body = build_reporte_secretaria_excel(db, secretaria_id, anio, trimestre)
-    return _xlsx_response(body, f"reporte-secretaria-{anio}-T{trimestre}.xlsx")
+    lab = etiqueta_periodo(get_tipo_periodo(db), trimestre)
+    return _xlsx_response(body, f"reporte-secretaria-{anio}-{lab}.xlsx")
 
 
 @router.get("/total")
@@ -47,7 +49,8 @@ def reporte_total(
     formato: str = Query("xlsx"),
 ):
     body = build_reporte_total_excel(db, anio, trimestre)
-    return _xlsx_response(body, f"reporte-total-{anio}-T{trimestre}.xlsx")
+    lab = etiqueta_periodo(get_tipo_periodo(db), trimestre)
+    return _xlsx_response(body, f"reporte-total-{anio}-{lab}.xlsx")
 
 
 @router.get("/sector/{sector_id}")
@@ -60,7 +63,8 @@ def reporte_sector(
     formato: str = Query("xlsx"),
 ):
     body = build_reporte_sector_excel(db, sector_id, anio, trimestre)
-    return _xlsx_response(body, f"reporte-sector-{sector_id}-{anio}-T{trimestre}.xlsx")
+    lab = etiqueta_periodo(get_tipo_periodo(db), trimestre)
+    return _xlsx_response(body, f"reporte-sector-{sector_id}-{anio}-{lab}.xlsx")
 
 
 @router.get("/pendientes")
@@ -72,4 +76,5 @@ def reporte_pendientes(
     formato: str = Query("xlsx"),
 ):
     body = build_reporte_pendientes_excel(db, anio, trimestre)
-    return _xlsx_response(body, f"pendientes-{anio}-T{trimestre}.xlsx")
+    lab = etiqueta_periodo(get_tipo_periodo(db), trimestre)
+    return _xlsx_response(body, f"pendientes-{anio}-{lab}.xlsx")

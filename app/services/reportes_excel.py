@@ -18,6 +18,12 @@ from app.models import (
     SeguimientoMeta,
 )
 from app.services.dashboard_service import dashboard_global, dashboard_secretaria
+from app.services.periodo_config import (
+    etiqueta_periodo,
+    get_tipo_periodo,
+    nombre_periodo,
+    numeros_periodo,
+)
 
 _VALOR_ESPERADO_BY_ANIO = {
     2024: "valor_esperado_2024",
@@ -35,10 +41,10 @@ def _valor_esperado_meta_por_anio(meta: Meta, anio: int) -> float:
     return float(v or 0)
 
 
-def _seguimientos_por_trimestre(meta: Meta, anio: int) -> dict[int, SeguimientoMeta]:
+def _seguimientos_por_trimestre(meta: Meta, anio: int, max_n: int = 4) -> dict[int, SeguimientoMeta]:
     out: dict[int, SeguimientoMeta] = {}
     for s in meta.seguimientos or []:
-        if s.anio == anio and 1 <= s.trimestre <= 4:
+        if s.anio == anio and 1 <= s.trimestre <= max_n:
             out[s.trimestre] = s
     return out
 
@@ -73,7 +79,9 @@ def _append_sheet_metas_seguimiento_trimestres(
     anio: int,
     bold: Font,
 ) -> None:
-    """Una fila por meta activa; por cada T1–T4 del año: valores ingresados en seguimiento."""
+    """Una fila por meta activa; por cada período visible del año: valores de seguimiento."""
+    tipo = get_tipo_periodo(db)
+    periodos = numeros_periodo(tipo)
     metas = (
         db.query(Meta)
         .filter(Meta.activo == True)
@@ -108,9 +116,9 @@ def _append_sheet_metas_seguimiento_trimestres(
         "Fecha registro",
     ]
     header_row: list[str] = list(base_headers)
-    for t in (1, 2, 3, 4):
+    for t in periodos:
         for h in per_t_headers:
-            header_row.append(f"T{t} — {h}")
+            header_row.append(f"{etiqueta_periodo(tipo, t)} — {h}")
     ws.append(header_row)
     for c in ws[1]:
         c.font = bold
@@ -122,7 +130,7 @@ def _append_sheet_metas_seguimiento_trimestres(
         if ip and ip.producto and ip.producto.programa and ip.producto.programa.sector:
             sector_n = ip.producto.programa.sector.nombre or ""
         sec_nombre = meta.secretaria.nombre if meta.secretaria else ""
-        by_t = _seguimientos_por_trimestre(meta, anio)
+        by_t = _seguimientos_por_trimestre(meta, anio, max(periodos))
         row: list = [
             meta.id,
             sec_nombre,
@@ -132,7 +140,7 @@ def _append_sheet_metas_seguimiento_trimestres(
             sector_n,
             _valor_esperado_meta_por_anio(meta, anio),
         ]
-        for t in (1, 2, 3, 4):
+        for t in periodos:
             s = by_t.get(t)
             row.extend(
                 [
@@ -148,7 +156,7 @@ def _append_sheet_metas_seguimiento_trimestres(
 
     # Anchos razonables (muchas columnas; evita autosize pesado)
     widths = [10, 28, 48, 14, 32, 22, 16]
-    for t in range(4):
+    for _ in periodos:
         widths.extend([16, 16, 12, 36, 36, 22])
     for idx, wch in enumerate(widths, start=1):
         if idx <= ws.max_column:
@@ -169,12 +177,15 @@ def build_reporte_total_excel(db: Session, anio: int, trimestre: int) -> bytes:
     ws0 = wb.active
     ws0.title = "Resumen"
     bold = Font(bold=True)
-    ws0["A1"] = f"Consolidado total — Año {anio} · Trimestre {trimestre}"
+    tipo = get_tipo_periodo(db)
+    lab = etiqueta_periodo(tipo, trimestre)
+    nom = nombre_periodo(tipo)
+    ws0["A1"] = f"Consolidado total — Año {anio} · {nom} {lab}"
     ws0["A1"].font = bold
     kpis = data["kpis"]
     rows = [
         ("Total metas activas", kpis["total_metas"]),
-        ("Con seguimiento en el trimestre", kpis["con_seguimiento"]),
+        (f"Con seguimiento en el {nom.lower()}", kpis["con_seguimiento"]),
         ("Pendientes", kpis["pendientes"]),
         ("% cumplimiento promedio", kpis["porcentaje_cumplimiento_prom"]),
     ]
@@ -214,14 +225,16 @@ def build_reporte_total_excel(db: Session, anio: int, trimestre: int) -> bytes:
     _autosize_columns(ws2)
 
     # % de metas activas con seguimiento en cada trimestre (filas = secretarías)
-    ws3 = wb.create_sheet("Cobertura por trimestre")
+    tipo = get_tipo_periodo(db)
+    periodos = numeros_periodo(tipo)
+    ws3 = wb.create_sheet(f"Cobertura por {nombre_periodo(tipo).lower()}")
     by_sec: dict[int, dict] = {}
     for h in data["heatmap"]:
         sid = h["secretaria_id"]
         if sid not in by_sec:
             by_sec[sid] = {"nombre": h["secretaria_nombre"], "t": {}}
         by_sec[sid]["t"][h["trimestre"]] = h["porcentaje"]
-    ws3.append(["Secretaría", "T1", "T2", "T3", "T4"])
+    ws3.append(["Secretaría", *[etiqueta_periodo(tipo, n) for n in periodos]])
     for c in ws3[1]:
         c.font = bold
     for sid in sorted(by_sec.keys()):
@@ -229,10 +242,7 @@ def build_reporte_total_excel(db: Session, anio: int, trimestre: int) -> bytes:
         ws3.append(
             [
                 info["nombre"],
-                info["t"].get(1) if info["t"].get(1) is not None else "",
-                info["t"].get(2) if info["t"].get(2) is not None else "",
-                info["t"].get(3) if info["t"].get(3) is not None else "",
-                info["t"].get(4) if info["t"].get(4) is not None else "",
+                *[info["t"].get(n) if info["t"].get(n) is not None else "" for n in periodos],
             ]
         )
     _autosize_columns(ws3)
@@ -254,13 +264,16 @@ def build_reporte_secretaria_excel(
     ws.title = "Resumen"
     bold = Font(bold=True)
     sec = data["secretaria"]
-    ws["A1"] = f"Reporte secretaría: {sec.get('nombre', '')} — {anio} T{trimestre}"
+    tipo = get_tipo_periodo(db)
+    lab = etiqueta_periodo(tipo, trimestre)
+    nom = nombre_periodo(tipo)
+    ws["A1"] = f"Reporte secretaría: {sec.get('nombre', '')} — {anio} {lab}"
     ws["A1"].font = bold
     k = data["kpis"]
     for i, (label, val) in enumerate(
         [
             ("Total metas", k["total_metas"]),
-            ("Registradas en el trimestre", k["registradas"]),
+            (f"Registradas en el {nom.lower()}", k["registradas"]),
             ("Pendientes", k["pendientes"]),
             ("% cumplimiento", k["porcentaje_cumplimiento"]),
         ],
@@ -278,7 +291,7 @@ def build_reporte_secretaria_excel(
             "Indicador",
             "Sector",
             "Valor esperado 2026",
-            f"% cumpl. T{trimestre}",
+            f"% cumpl. {lab}",
             "Valor ejecutado",
         ]
     )
@@ -346,7 +359,8 @@ def build_reporte_sector_excel(db: Session, sector_id: int, anio: int, trimestre
     ws = wb.active
     ws.title = "Metas"
     bold = Font(bold=True)
-    ws["A1"] = f"Sector: {nombre_sec} — {anio} T{trimestre}"
+    tipo = get_tipo_periodo(db)
+    ws["A1"] = f"Sector: {nombre_sec} — {anio} {etiqueta_periodo(tipo, trimestre)}"
     ws["A1"].font = bold
     ws.append([])
     ws.append(
@@ -409,9 +423,11 @@ def build_reporte_pendientes_excel(db: Session, anio: int, trimestre: int) -> by
 
     wb = Workbook()
     ws = wb.active
-    ws.title = f"Pendientes T{trimestre}"
+    tipo = get_tipo_periodo(db)
+    lab = etiqueta_periodo(tipo, trimestre)
+    ws.title = f"Pendientes {lab}"
     bold = Font(bold=True)
-    ws["A1"] = f"Metas sin seguimiento — {anio} · Trimestre {trimestre}"
+    ws["A1"] = f"Metas sin seguimiento — {anio} · {nombre_periodo(tipo)} {lab}"
     ws["A1"].font = bold
     ws.append([])
     ws.append(["ID", "Secretaría", "Descripción", "Indicador", "Sector"])

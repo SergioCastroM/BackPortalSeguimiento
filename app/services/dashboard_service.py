@@ -11,6 +11,7 @@ from app.models import (
     Producto,
     IndicadorProducto,
 )
+from app.services.periodo_config import get_tipo_periodo, numeros_periodo
 
 
 def dashboard_global(db: Session, anio: int, trimestre: int) -> dict:
@@ -90,7 +91,9 @@ def dashboard_global(db: Session, anio: int, trimestre: int) -> dict:
             {"sector_id": sec.id, "sector_nombre": sec.nombre, "cantidad": cnt, "porcentaje": round(pct, 1)}
         )
 
-    # Evolución: mismas 5 primeras secretarías (por id) × T1–T4
+    periodos = numeros_periodo(get_tipo_periodo(db))
+
+    # Evolución: mismas 5 primeras secretarías (por id) × períodos visibles
     top5 = db.query(Secretaria).order_by(Secretaria.id).limit(5).all()
     ids5 = [s.id for s in top5]
     evolucion: list[dict] = []
@@ -116,7 +119,7 @@ def dashboard_global(db: Session, anio: int, trimestre: int) -> dict:
         )
         ev_map = {(r[0], r[2]): float(r[3] or 0) for r in ev_agg}
         for s in top5:
-            for t in (1, 2, 3, 4):
+            for t in periodos:
                 evolucion.append(
                     {
                         "trimestre": t,
@@ -156,7 +159,7 @@ def dashboard_global(db: Session, anio: int, trimestre: int) -> dict:
     heatmap = []
     for s in all_sec:
         tot = total_por_secretaria.get(s.id, 0)
-        for t in (1, 2, 3, 4):
+        for t in periodos:
             if tot == 0:
                 cobertura = None
             else:
@@ -232,13 +235,14 @@ def dashboard_secretaria(db: Session, secretaria_id: int, anio: int, trimestre: 
         .filter(
             Meta.secretaria_id == secretaria_id,
             SeguimientoMeta.anio == anio,
-            SeguimientoMeta.trimestre.in_((1, 2, 3, 4)),
+            SeguimientoMeta.trimestre.in_(tuple(numeros_periodo(get_tipo_periodo(db)))),
         )
         .group_by(SeguimientoMeta.trimestre)
         .all()
     )
     ev_map = {int(t): float(p or 0) for t, p in ev_rows}
-    evolucion = [{"trimestre": t, "anio": anio, "porcentaje": ev_map.get(t, 0.0)} for t in (1, 2, 3, 4)]
+    periodos = numeros_periodo(get_tipo_periodo(db))
+    evolucion = [{"trimestre": t, "anio": anio, "porcentaje": ev_map.get(t, 0.0)} for t in periodos]
 
     metas_list = []
     for m in metas:

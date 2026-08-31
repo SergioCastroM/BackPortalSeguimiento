@@ -20,6 +20,17 @@ from app.models import (
     ProyectoMga,
 )
 from app.core.security import get_password_hash
+from app.services.periodo_config import (
+    TIPO_CUATRIMESTRE,
+    cantidad_periodos,
+    etiqueta_periodo,
+    fecha_limite_default,
+    get_periodo_config,
+    get_tipo_periodo,
+    nombre_periodo,
+    numeros_periodo,
+    set_tipo_periodo,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -152,19 +163,55 @@ def list_sectores_catalog(db: Session = Depends(get_db), current_user: Usuario =
     return [{"id": s.id, "nombre": s.nombre} for s in rows]
 
 
+class TipoPeriodoUpdate(BaseModel):
+    tipo: str = Field(..., description="trimestre o cuatrimestre")
+
+
+@router.get("/config/periodos")
+def get_admin_config_periodos(
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_admin),
+):
+    return get_periodo_config(db)
+
+
+@router.put("/config/periodos")
+def update_tipo_periodo(
+    body: TipoPeriodoUpdate,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_admin),
+):
+    """Cambia el tipo de período. No borra seguimientos ni períodos ya guardados."""
+    tipo = set_tipo_periodo(db, body.tipo)
+    return get_periodo_config(db) | {"message": f"Tipo de período actualizado a {nombre_periodo(tipo, plural=True).lower()}."}
+
+
 @router.get("/trimestres")
 def list_trimestres(db: Session = Depends(get_db), current_user: Usuario = Depends(require_admin)):
+    tipo = get_tipo_periodo(db)
+    max_n = cantidad_periodos(tipo)
     return [
-        {"id": p.id, "anio": p.anio, "trimestre": p.trimestre, "estado": p.estado.value, "fecha_limite": str(p.fecha_limite) if p.fecha_limite else None}
+        {
+            "id": p.id,
+            "anio": p.anio,
+            "trimestre": p.trimestre,
+            "etiqueta": etiqueta_periodo(tipo, p.trimestre) if p.trimestre <= max_n else f"T{p.trimestre}",
+            "visible": p.trimestre <= max_n,
+            "estado": p.estado.value,
+            "fecha_limite": str(p.fecha_limite) if p.fecha_limite else None,
+        }
         for p in db.query(PeriodoSeguimiento).order_by(PeriodoSeguimiento.anio, PeriodoSeguimiento.trimestre).all()
     ]
 
 
-def _periodo_to_dict(p: PeriodoSeguimiento) -> dict:
+def _periodo_to_dict(p: PeriodoSeguimiento, tipo: str | None = None) -> dict:
+    t = tipo or TIPO_CUATRIMESTRE
     return {
         "id": p.id,
         "anio": p.anio,
         "trimestre": p.trimestre,
+        "etiqueta": etiqueta_periodo(t, p.trimestre),
+        "visible": p.trimestre <= cantidad_periodos(t),
         "estado": p.estado.value,
         "fecha_limite": str(p.fecha_limite) if p.fecha_limite else None,
     }
@@ -183,6 +230,13 @@ def create_trimestre(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_admin),
 ):
+    tipo = get_tipo_periodo(db)
+    max_n = cantidad_periodos(tipo)
+    if body.trimestre > max_n:
+        raise HTTPException(
+            status_code=400,
+            detail=f"En modo {nombre_periodo(tipo, plural=True).lower()} solo se pueden crear períodos 1–{max_n}.",
+        )
     if body.estado not in ("abierto", "cerrado", "proximo"):
         raise HTTPException(status_code=400, detail="Estado inválido. Use: abierto, cerrado o proximo.")
     exists = (
@@ -191,7 +245,7 @@ def create_trimestre(
         .first()
     )
     if exists:
-        raise HTTPException(status_code=400, detail="Ya existe un período para ese año y trimestre.")
+        raise HTTPException(status_code=400, detail="Ya existe un período para ese año y número.")
     p = PeriodoSeguimiento(
         anio=body.anio,
         trimestre=body.trimestre,
@@ -201,15 +255,7 @@ def create_trimestre(
     db.add(p)
     db.commit()
     db.refresh(p)
-    return _periodo_to_dict(p)
-
-
-_FECHA_LIMITE_TRIMESTRE = {
-    1: (3, 31),
-    2: (6, 30),
-    3: (9, 30),
-    4: (12, 31),
-}
+    return _periodo_to_dict(p, tipo)
 
 
 @router.post("/trimestres/completar-anio/{anio}")
@@ -219,13 +265,14 @@ def completar_trimestres_anio(
     current_user: Usuario = Depends(require_admin),
 ):
     """
-    Crea T1–T4 del año si faltan (fecha límite típica fin de trimestre).
-    Los nuevos quedan en estado «proximo»; puede abrirlos después sin cerrar otros.
+    Crea los períodos faltantes del tipo actual (C1–C3 o T1–T4).
+    No elimina períodos extra ya guardados (p. ej. T4).
     """
     if anio < 2000 or anio > 2100:
         raise HTTPException(status_code=400, detail="Año fuera de rango.")
+    tipo = get_tipo_periodo(db)
     creados: List[PeriodoSeguimiento] = []
-    for t in (1, 2, 3, 4):
+    for t in numeros_periodo(tipo):
         existe = (
             db.query(PeriodoSeguimiento)
             .filter(PeriodoSeguimiento.anio == anio, PeriodoSeguimiento.trimestre == t)
@@ -233,19 +280,18 @@ def completar_trimestres_anio(
         )
         if existe:
             continue
-        mes, dia = _FECHA_LIMITE_TRIMESTRE[t]
         p = PeriodoSeguimiento(
             anio=anio,
             trimestre=t,
             estado=EstadoPeriodo.proximo,
-            fecha_limite=date(anio, mes, dia),
+            fecha_limite=fecha_limite_default(tipo, anio, t),
         )
         db.add(p)
         creados.append(p)
     db.commit()
     for p in creados:
         db.refresh(p)
-    return {"creados": len(creados), "periodos": [_periodo_to_dict(p) for p in creados]}
+    return {"creados": len(creados), "periodos": [_periodo_to_dict(p, tipo) for p in creados]}
 
 
 class TrimestreUpdate(BaseModel):

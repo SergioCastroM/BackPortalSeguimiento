@@ -14,6 +14,7 @@ from app.models.presupuesto_fuente import PresupuestoFuente
 from app.models.seguimiento_meta import SeguimientoMeta
 from app.models.periodo_seguimiento import PeriodoSeguimiento, EstadoPeriodo
 from app.models.import_log import ImportLog
+from app.models.configuracion import Configuracion
 
 __all__ = [
     "PlanDesarrollo",
@@ -35,4 +36,5 @@ __all__ = [
     "PeriodoSeguimiento",
     "EstadoPeriodo",
     "ImportLog",
+    "Configuracion",
 ]

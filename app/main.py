@@ -48,7 +48,7 @@ OPENAPI_TAGS = [
     {"name": "metas", "description": "Listado y detalle de metas por secretaría."},
     {"name": "seguimiento", "description": "Registro y actualización de seguimiento trimestral por meta."},
     {"name": "dashboard", "description": "KPIs y datos para dashboards (global y por secretaría)."},
-    {"name": "admin", "description": "Secretarías, usuarios, trimestres (solo admin)."},
+    {"name": "admin", "description": "Secretarías, usuarios, períodos (solo admin)."},
     {"name": "excel", "description": "Carga y confirmación de importación desde Excel."},
     {"name": "reportes", "description": "Descarga de reportes Excel/PDF por secretaría, total, pendientes."},
 ]

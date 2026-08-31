@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1 import auth, metas, seguimiento, dashboard, admin, excel, reportes, sisben, presupuesto_sync
+from app.api.v1 import auth, metas, seguimiento, dashboard, admin, excel, reportes, sisben, presupuesto_sync, config
 
 api_router = APIRouter()
 
@@ -15,6 +15,7 @@ def api_v1_root():
     }
 
 
+api_router.include_router(config.router)
 api_router.include_router(auth.router)
 api_router.include_router(metas.router)
 api_router.include_router(seguimiento.router)
