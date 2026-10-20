@@ -101,7 +101,14 @@ async def presupuesto_sync_upload(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    preview = build_preview(db, rows)
+    try:
+        preview = build_preview(db, rows)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo contrastar el Excel con la base de datos: {e}",
+        ) from e
     err_count = sum(1 for r in preview if r.get("error"))
     job_id = str(uuid.uuid4())
     _jobs[job_id] = {"rows": rows}

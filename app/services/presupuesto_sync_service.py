@@ -135,7 +135,7 @@ def parse_presupuesto_excel(content: bytes) -> tuple[list[dict[str, Any]], list[
         vf = _to_decimal(row.get(mapping["valor_final"]))
         if vf is None:
             vf = vi + ad - ded
-            warnings.append(f"Fila {int(idx) + 2}: sin valor final; se asume inicial + adiciones − deducciones.")
+            warnings.append(f"Fila {int(idx) + 2}: sin valor final; se asume inicial + adiciones - deducciones.")
         rows.append(
             {
                 "fila_excel": int(idx) + 2,
@@ -152,40 +152,73 @@ def parse_presupuesto_excel(content: bytes) -> tuple[list[dict[str, Any]], list[
     return rows, warnings
 
 
-def _metas_por_codigo_indicador(db: Session, codigo: str) -> list[Meta]:
-    c = (codigo or "").strip()
-    if not c:
-        return []
-    cl = c.strip().lower()
-    return (
-        db.query(Meta)
-        .options(joinedload(Meta.secretaria))
-        .join(IndicadorProducto, Meta.indicador_producto_id == IndicadorProducto.id)
-        .filter(
-            Meta.activo == True,
-            IndicadorProducto.codigo.isnot(None),
-            func.lower(func.trim(IndicadorProducto.codigo)) == cl,
+def _cargar_metas_preview(
+    db: Session, rows: list[dict[str, Any]]
+) -> tuple[dict[int, Meta], dict[str, list[Meta]], dict[int, ProyectoMga]]:
+    """Una consulta por metas, otra por códigos y otra por proyectos. No borra datos."""
+    meta_ids = {int(r["meta_id"]) for r in rows if r.get("meta_id") is not None}
+    metas_by_id: dict[int, Meta] = {}
+    if meta_ids:
+        for m in (
+            db.query(Meta)
+            .options(joinedload(Meta.secretaria))
+            .filter(Meta.id.in_(meta_ids), Meta.activo == True)
+            .all()
+        ):
+            metas_by_id[m.id] = m
+
+    codigos_faltantes = {
+        (r.get("codigo") or "").strip().lower()
+        for r in rows
+        if (r.get("codigo") or "").strip()
+        and (r.get("meta_id") is None or int(r["meta_id"]) not in metas_by_id)
+    }
+    metas_by_codigo: dict[str, list[Meta]] = {}
+    if codigos_faltantes:
+        encontradas = (
+            db.query(Meta)
+            .options(joinedload(Meta.secretaria), joinedload(Meta.indicador_producto))
+            .join(IndicadorProducto, Meta.indicador_producto_id == IndicadorProducto.id)
+            .filter(
+                Meta.activo == True,
+                IndicadorProducto.codigo.isnot(None),
+                func.lower(func.ltrim(func.rtrim(IndicadorProducto.codigo))).in_(codigos_faltantes),
+            )
+            .all()
         )
-        .all()
-    )
+        for m in encontradas:
+            key = (m.indicador_producto.codigo or "").strip().lower() if m.indicador_producto else ""
+            if key:
+                metas_by_codigo.setdefault(key, []).append(m)
+
+    ids_proyecto = set(metas_by_id)
+    for grupo in metas_by_codigo.values():
+        if len(grupo) == 1:
+            ids_proyecto.add(grupo[0].id)
+    proyectos_by_meta: dict[int, ProyectoMga] = {}
+    if ids_proyecto:
+        for p in (
+            db.query(ProyectoMga)
+            .filter(ProyectoMga.meta_id.in_(ids_proyecto))
+            .order_by(ProyectoMga.id.asc())
+            .all()
+        ):
+            proyectos_by_meta.setdefault(p.meta_id, p)
+    return metas_by_id, metas_by_codigo, proyectos_by_meta
 
 
 def build_preview(db: Session, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Enriquece cada fila con estado, valores actuales en BD y mensajes de error."""
+    metas_by_id, metas_by_codigo, proyectos_by_meta = _cargar_metas_preview(db, rows)
     out: list[dict[str, Any]] = []
     for r in rows:
         codigo = r.get("codigo") or ""
         meta_id_excel = r.get("meta_id")
         meta: Meta | None = None
         if meta_id_excel is not None:
-            meta = (
-                db.query(Meta)
-                .options(joinedload(Meta.secretaria))
-                .filter(Meta.id == int(meta_id_excel), Meta.activo == True)
-                .first()
-            )
+            meta = metas_by_id.get(int(meta_id_excel))
         if meta is None and codigo:
-            metas = _metas_por_codigo_indicador(db, codigo)
+            metas = metas_by_codigo.get(codigo.strip().lower(), [])
             if len(metas) == 1:
                 meta = metas[0]
         base = {
@@ -210,7 +243,7 @@ def build_preview(db: Session, rows: list[dict[str, Any]]) -> list[dict[str, Any
             if meta_id_excel is not None:
                 base["error"] = f"No existe meta activa con Meta ID {meta_id_excel}."
             elif codigo:
-                metas = _metas_por_codigo_indicador(db, codigo)
+                metas = metas_by_codigo.get(codigo.strip().lower(), [])
                 if len(metas) == 0:
                     base["error"] = "No hay meta activa con ese código de indicador."
                 else:
@@ -220,7 +253,7 @@ def build_preview(db: Session, rows: list[dict[str, Any]]) -> list[dict[str, Any
             out.append(base)
             continue
 
-        p = primer_proyecto_mga(db, meta.id)
+        p = proyectos_by_meta.get(meta.id)
         sin_proyecto = p is None
 
         vi_n, ad_n, ded_n, vf_n = map(
