@@ -58,6 +58,7 @@ def _meta_to_detail(meta: Meta) -> dict:
         "valor_esperado_2025": float(meta.valor_esperado_2025 or 0),
         "valor_esperado_2026": float(meta.valor_esperado_2026 or 0),
         "valor_esperado_2027": float(meta.valor_esperado_2027 or 0),
+        "obligado": float(meta.obligado) if meta.obligado is not None else None,
         "activo": meta.activo,
         "linea_estrategica": {"id": meta.linea_estrategica.id, "nombre": meta.linea_estrategica.nombre} if meta.linea_estrategica and getattr(meta.linea_estrategica, "id", None) is not None else None,
         "secretaria": {"id": meta.secretaria.id, "nombre": meta.secretaria.nombre} if meta.secretaria and getattr(meta.secretaria, "id", None) is not None else None,

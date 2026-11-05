@@ -48,6 +48,7 @@ def presupuesto_sync_template(
         "Valor inicial",
         "Adiciones",
         "Deducciones",
+        "Obligado",
         "Valor final",
     ]
     ws.append(headers)
@@ -66,11 +67,12 @@ def presupuesto_sync_template(
                 "",
                 "",
                 "",
+                float(m.obligado) if m.obligado is not None else "",
                 "",
             ]
         )
 
-    widths = [10, 12, 18, 52, 28, 16, 14, 14, 16]
+    widths = [10, 12, 18, 52, 28, 16, 14, 14, 16, 16]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
@@ -141,6 +143,6 @@ def presupuesto_sync_confirm(
     _jobs.pop(job_id, None)
     return {
         "actualizados": n,
-        "mensaje": f"Se actualizaron {n} proyecto(s) MGA con los valores del Excel.",
+        "mensaje": f"Se actualizaron {n} meta(s): presupuesto MGA y, si el Excel lo trae, el obligado.",
         "advertencias": errs,
     }
