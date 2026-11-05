@@ -63,6 +63,9 @@ def _detect_columns(columns: list[str]) -> dict[str, str | None]:
         pick("valorfinal", "valfinal")
         or next((by_norm[k] for k in by_norm if "final" in k and "valor" in k), None)
     )
+    obligado = pick("obligado", "valorobligado") or next(
+        (by_norm[k] for k in by_norm if "obligado" in k), None
+    )
     return {
         "meta_id": meta_id_col,
         "codigo": codigo,
@@ -70,6 +73,7 @@ def _detect_columns(columns: list[str]) -> dict[str, str | None]:
         "adiciones": ad,
         "deducciones": ded,
         "valor_final": vf,
+        "obligado": obligado,
     }
 
 
@@ -90,6 +94,7 @@ def _to_decimal(val: Any) -> Decimal | None:
 def parse_presupuesto_excel(content: bytes) -> tuple[list[dict[str, Any]], list[str]]:
     """
     Lee el Excel y devuelve filas con claves: codigo, valor_inicial, adiciones, deducciones, valor_final.
+    Si el archivo trae la columna Obligado, cada fila incluye ese mínimo de cumplimiento.
     Errores de cabecera en la lista de warnings (y lista vacía si falla grave).
     """
     warnings: list[str] = []
@@ -107,7 +112,8 @@ def parse_presupuesto_excel(content: bytes) -> tuple[list[dict[str, Any]], list[
             + ", ".join(missing)
             + f". Columnas encontradas: {list(df.columns)}. "
             "Use la plantilla exportada desde el sistema o encabezados como: "
-            "Meta ID (opcional), Código meta, Valor inicial, Adiciones, Deducciones, Valor final."
+            "Meta ID (opcional), Código meta, Valor inicial, Adiciones, Deducciones, Valor final. "
+            "La columna Obligado es opcional."
         )
 
     rows: list[dict[str, Any]] = []
@@ -136,6 +142,11 @@ def parse_presupuesto_excel(content: bytes) -> tuple[list[dict[str, Any]], list[
         if vf is None:
             vf = vi + ad - ded
             warnings.append(f"Fila {int(idx) + 2}: sin valor final; se asume inicial + adiciones - deducciones.")
+        tiene_obligado = bool(mapping.get("obligado"))
+        obligado: float | None = None
+        if tiene_obligado:
+            ob = _to_decimal(row.get(mapping["obligado"]))
+            obligado = float(ob) if ob is not None else None
         rows.append(
             {
                 "fila_excel": int(idx) + 2,
@@ -145,6 +156,8 @@ def parse_presupuesto_excel(content: bytes) -> tuple[list[dict[str, Any]], list[
                 "adiciones": float(ad),
                 "deducciones": float(ded),
                 "valor_final": float(vf),
+                "obligado": obligado,
+                "tiene_obligado": tiene_obligado,
             }
         )
     if not rows:
@@ -228,6 +241,8 @@ def build_preview(db: Session, rows: list[dict[str, Any]]) -> list[dict[str, Any
             "adiciones_nuevo": r["adiciones"],
             "deducciones_nuevo": r["deducciones"],
             "valor_final_nuevo": r["valor_final"],
+            "obligado_nuevo": r.get("obligado"),
+            "tiene_obligado": bool(r.get("tiene_obligado")),
             "meta_id": None,
             "descripcion": None,
             "secretaria": None,
@@ -235,6 +250,7 @@ def build_preview(db: Session, rows: list[dict[str, Any]]) -> list[dict[str, Any
             "adiciones_actual": None,
             "deducciones_actual": None,
             "valor_final_actual": None,
+            "obligado_actual": None,
             "error": None,
             "aviso_formula": None,
             "aviso_sin_proyecto": None,
@@ -270,6 +286,7 @@ def build_preview(db: Session, rows: list[dict[str, Any]]) -> list[dict[str, Any
         base["meta_id"] = meta.id
         base["descripcion"] = (meta.descripcion or "")[:120]
         base["secretaria"] = meta.secretaria.nombre if meta.secretaria else ""
+        base["obligado_actual"] = float(meta.obligado) if meta.obligado is not None else None
         if sin_proyecto:
             base["valor_inicial_actual"] = 0.0
             base["adiciones_actual"] = 0.0
@@ -323,6 +340,11 @@ def apply_presupuesto_sync(db: Session, preview: list[dict[str, Any]]) -> tuple[
             p.adicion = Decimal(str(row["adiciones_nuevo"]))
             p.reduccion = Decimal(str(row["deducciones_nuevo"]))
             p.valor_final = Decimal(str(row["valor_final_nuevo"]))
+            if row.get("tiene_obligado"):
+                meta = p.meta or db.query(Meta).filter(Meta.id == p.meta_id).first()
+                if meta is not None:
+                    nuevo = row.get("obligado_nuevo")
+                    meta.obligado = None if nuevo is None else Decimal(str(nuevo))
         db.commit()
     except Exception as e:
         db.rollback()

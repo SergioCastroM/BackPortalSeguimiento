@@ -20,6 +20,8 @@ class Meta(Base):
     valor_esperado_2025 = Column(Numeric(20, 4), default=0, nullable=True)
     valor_esperado_2026 = Column(Numeric(20, 4), default=0, nullable=True)
     valor_esperado_2027 = Column(Numeric(20, 4), default=0, nullable=True)
+    # Mínimo de cumplimiento en pesos. Vacío si la meta no tiene obligado.
+    obligado = Column(Numeric(20, 4), nullable=True)
     activo = Column(Boolean, default=True, nullable=False)
 
     linea_estrategica = relationship("LineaEstrategica", backref="metas")
