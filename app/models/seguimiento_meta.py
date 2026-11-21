@@ -20,7 +20,7 @@ class SeguimientoMeta(Base):
     valor_ejecutado = Column(Numeric(20, 4), default=0, nullable=True)
     recursos_ejecutados = Column(Numeric(20, 4), default=0, nullable=True)
     evidencia = Column(Text, nullable=True)
-    porcentaje_cumplimiento = Column(Numeric(5, 2), default=0, nullable=True)
+    porcentaje_cumplimiento = Column(Numeric(12, 2), default=0, nullable=True)
     observaciones = Column(Text, nullable=True)
     fecha_registro = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
 

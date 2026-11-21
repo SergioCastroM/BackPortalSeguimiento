@@ -305,7 +305,10 @@ def registrar_movimiento_presupuesto_mga(
     if not meta:
         raise HTTPException(status_code=404, detail="Meta no encontrada")
     try:
+        from app.services.seguimiento_service import recalcular_porcentajes_meta
+
         p = registrar_adicion_o_reduccion(db, meta_id, body.tipo, body.monto)
+        recalcular_porcentajes_meta(db, meta_id)
         db.commit()
         db.refresh(p)
     except ValueError as e:
