@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 
-from app.models import Usuario, PeriodoSeguimiento, EstadoPeriodo
+from app.models import Usuario, PeriodoSeguimiento, EstadoPeriodo, SeguimientoMeta
 
 
 def calcular_porcentaje(valor_ejecutado: float, referencia: float) -> float:
@@ -10,19 +10,36 @@ def calcular_porcentaje(valor_ejecutado: float, referencia: float) -> float:
     return round((float(valor_ejecutado) / float(referencia)) * 100, 2)
 
 
-def denominador_cumplimiento_seguimiento(db: Session, meta_id: int, valor_esperado_meta: float) -> float:
+def denominador_cumplimiento_seguimiento(
+    db: Session, meta_id: int, valor_esperado_meta: float = 0
+) -> float:
     """
-    Prioriza el valor final MGA (inicial + adiciones − disminuciones) del primer proyecto;
-    si no hay proyecto o valor_final es 0, usa valor esperado 2026 de la meta.
+    Denominador del % de seguimiento: valor final MGA del primer proyecto.
+    Si aún no hay valor final (> 0), devuelve 0: se puede registrar la ejecución
+    y el % se recalcula cuando se cargue el presupuesto.
+    No usa valor_esperado_2026 (suele ser unidades, no pesos).
     """
     from app.services.proyecto_mga_service import primer_proyecto_mga
 
+    _ = valor_esperado_meta  # compat firma; no se usa como pesos
     p = primer_proyecto_mga(db, meta_id)
     if p is not None:
         vf = float(p.valor_final or 0)
         if vf > 0:
             return vf
-    return float(valor_esperado_meta or 0)
+    return 0.0
+
+
+def recalcular_porcentajes_meta(db: Session, meta_id: int) -> int:
+    """Recalcula porcentaje_cumplimiento de todos los seguimientos de la meta."""
+    referencia = denominador_cumplimiento_seguimiento(db, meta_id)
+    n = 0
+    for seg in db.query(SeguimientoMeta).filter(SeguimientoMeta.meta_id == meta_id).all():
+        seg.porcentaje_cumplimiento = calcular_porcentaje(
+            float(seg.valor_ejecutado or 0), referencia
+        )
+        n += 1
+    return n
 
 
 def trimestre_abierto(db: Session, trimestre: int, anio: int) -> bool:

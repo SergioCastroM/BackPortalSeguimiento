@@ -34,14 +34,11 @@ def create_seguimiento(
         SeguimientoMeta.trimestre == body.trimestre,
         SeguimientoMeta.anio == body.anio,
     ).first()
-    valor_esp = float(meta.valor_esperado_2026 or 0)
-    referencia = denominador_cumplimiento_seguimiento(db, meta.id, valor_esp)
+    referencia = denominador_cumplimiento_seguimiento(db, meta.id)
     valor_pesos = Decimal(body.recursos_ejecutados)
-    pct = (
-        body.porcentaje_cumplimiento
-        if body.porcentaje_cumplimiento is not None
-        else calcular_porcentaje(float(valor_pesos), referencia)
-    )
+    # Siempre se calcula en servidor. Sin valor final MGA el % queda 0 y se
+    # recalcula al sincronizar o mover el presupuesto.
+    pct = calcular_porcentaje(float(valor_pesos), referencia)
     if existing:
         existing.valor_ejecutado = valor_pesos
         existing.recursos_ejecutados = valor_pesos
@@ -102,12 +99,11 @@ def update_seguimiento(
         if len(ob) < 5:
             raise HTTPException(status_code=400, detail="Describa lo realizado (mínimo 5 caracteres).")
         seg.observaciones = ob
-    if body.porcentaje_cumplimiento is not None:
-        seg.porcentaje_cumplimiento = body.porcentaje_cumplimiento
-    elif changed_monto:
-        valor_esp = float(meta.valor_esperado_2026 or 0)
-        referencia = denominador_cumplimiento_seguimiento(db, meta.id, valor_esp)
-        seg.porcentaje_cumplimiento = calcular_porcentaje(float(seg.valor_ejecutado or 0), referencia)
+    if changed_monto or body.porcentaje_cumplimiento is not None:
+        referencia = denominador_cumplimiento_seguimiento(db, meta.id)
+        seg.porcentaje_cumplimiento = calcular_porcentaje(
+            float(seg.valor_ejecutado or 0), referencia
+        )
     db.commit()
     db.refresh(seg)
     return seg

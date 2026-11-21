@@ -335,6 +335,9 @@ def apply_presupuesto_sync(db: Session, preview: list[dict[str, Any]]) -> tuple[
         return 0, ["No hay filas válidas para aplicar. Corrija los errores del preview o suba otro archivo."]
 
     try:
+        from app.services.seguimiento_service import recalcular_porcentajes_meta
+
+        metas_recalc: set[int] = set()
         for p, row in to_apply:
             p.valor_inicial = Decimal(str(row["valor_inicial_nuevo"]))
             p.adicion = Decimal(str(row["adiciones_nuevo"]))
@@ -345,6 +348,9 @@ def apply_presupuesto_sync(db: Session, preview: list[dict[str, Any]]) -> tuple[
                 if meta is not None:
                     nuevo = row.get("obligado_nuevo")
                     meta.obligado = None if nuevo is None else Decimal(str(nuevo))
+            metas_recalc.add(int(p.meta_id))
+        for mid in metas_recalc:
+            recalcular_porcentajes_meta(db, mid)
         db.commit()
     except Exception as e:
         db.rollback()
