@@ -1,4 +1,5 @@
-from typing import Optional
+from decimal import Decimal
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import Numeric, and_, asc, case, cast, desc, distinct, func, literal
@@ -18,9 +19,14 @@ from app.models import (
     SeguimientoMeta,
     Usuario,
 )
+from app.schemas.historial import HistorialEventoResponse
 from app.schemas.meta import MetaDetail, PaginatedMetas
 from app.schemas.proyecto_mga import ProyectoMgaMovimientoCreate
-from app.services.proyecto_mga_service import registrar_adicion_o_reduccion
+from app.services.historial_service import (
+    listar_historial_meta,
+    registrar_evento_movimiento_presupuesto,
+)
+from app.services.proyecto_mga_service import primer_proyecto_mga, registrar_adicion_o_reduccion
 
 router = APIRouter(prefix="/metas", tags=["metas"])
 
@@ -77,7 +83,21 @@ def _meta_to_detail(meta: Meta) -> dict:
             for p in sorted(meta.proyectos_mga or [], key=lambda x: x.id)
         ],
         "seguimientos": [
-            {"id": s.id, "meta_id": s.meta_id, "usuario_id": s.usuario_id, "trimestre": s.trimestre, "anio": s.anio, "valor_ejecutado": float(s.valor_ejecutado or 0), "recursos_ejecutados": float(s.recursos_ejecutados or 0), "evidencia": s.evidencia, "porcentaje_cumplimiento": float(s.porcentaje_cumplimiento or 0), "observaciones": s.observaciones, "fecha_registro": s.fecha_registro.isoformat() if s.fecha_registro else None}
+            {
+                "id": s.id,
+                "meta_id": s.meta_id,
+                "usuario_id": s.usuario_id,
+                "usuario_nombre": s.usuario.nombre if getattr(s, "usuario", None) else None,
+                "usuario_email": s.usuario.email if getattr(s, "usuario", None) else None,
+                "trimestre": s.trimestre,
+                "anio": s.anio,
+                "valor_ejecutado": float(s.valor_ejecutado or 0),
+                "recursos_ejecutados": float(s.recursos_ejecutados or 0),
+                "evidencia": s.evidencia,
+                "porcentaje_cumplimiento": float(s.porcentaje_cumplimiento or 0),
+                "observaciones": s.observaciones,
+                "fecha_registro": s.fecha_registro.isoformat() if s.fecha_registro else None,
+            }
             for s in (meta.seguimientos or [])
         ],
     }
@@ -113,7 +133,7 @@ def _meta_query(db: Session, user: Usuario):
         joinedload(Meta.indicador_producto).joinedload(IndicadorProducto.producto).joinedload(Producto.programa).joinedload(Programa.sector),
         # Colecciones: selectinload evita JOIN+cartesiano con LIMIT (SQLAlchemy 2 / Postgres en Azure).
         selectinload(Meta.proyectos_mga),
-        selectinload(Meta.seguimientos),
+        selectinload(Meta.seguimientos).joinedload(SeguimientoMeta.usuario),
     )
 
 
@@ -223,7 +243,7 @@ def list_metas(
         joinedload(Meta.secretaria),
         joinedload(Meta.indicador_producto).joinedload(IndicadorProducto.producto).joinedload(Producto.programa).joinedload(Programa.sector),
         selectinload(Meta.proyectos_mga),
-        selectinload(Meta.seguimientos),
+        selectinload(Meta.seguimientos).joinedload(SeguimientoMeta.usuario),
     )
     order_cols: list = []
     if need_metrics:
@@ -289,6 +309,19 @@ def get_meta_seguimiento(
     return [{"id": s.id, "trimestre": s.trimestre, "anio": s.anio, "porcentaje_cumplimiento": float(s.porcentaje_cumplimiento or 0), "valor_ejecutado": float(s.valor_ejecutado or 0), "evidencia": s.evidencia, "fecha_registro": s.fecha_registro.isoformat() if s.fecha_registro else None} for s in meta.seguimientos]
 
 
+@router.get("/{meta_id}/historial", response_model=List[HistorialEventoResponse])
+def get_meta_historial(
+    meta_id: int,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user),
+):
+    """Devuelve la bitácora cronológica de seguimientos y movimientos presupuestales de la meta."""
+    meta = _meta_base_query(db, current_user).filter(Meta.id == meta_id).first()
+    if not meta:
+        raise HTTPException(status_code=404, detail="Meta no encontrada")
+    return listar_historial_meta(db, meta_id)
+
+
 @router.post("/{meta_id}/proyecto-mga/movimiento")
 def registrar_movimiento_presupuesto_mga(
     meta_id: int,
@@ -307,8 +340,19 @@ def registrar_movimiento_presupuesto_mga(
     try:
         from app.services.seguimiento_service import recalcular_porcentajes_meta
 
+        p_prev = primer_proyecto_mga(db, meta_id)
+        vf_anterior = Decimal(p_prev.valor_final or 0) if p_prev else Decimal("0")
         p = registrar_adicion_o_reduccion(db, meta_id, body.tipo, body.monto)
         recalcular_porcentajes_meta(db, meta_id)
+        registrar_evento_movimiento_presupuesto(
+            db,
+            meta_id=meta_id,
+            usuario_id=current_user.id,
+            tipo=body.tipo,
+            monto=body.monto,
+            valor_final_anterior=vf_anterior,
+            valor_final_nuevo=Decimal(p.valor_final or 0),
+        )
         db.commit()
         db.refresh(p)
     except ValueError as e:

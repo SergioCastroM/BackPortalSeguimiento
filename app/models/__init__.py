@@ -12,6 +12,7 @@ from app.models.proyecto_mga import ProyectoMga
 from app.models.actividad_mga import ActividadMga
 from app.models.presupuesto_fuente import PresupuestoFuente
 from app.models.seguimiento_meta import SeguimientoMeta
+from app.models.historial_actividad_meta import HistorialActividadMeta
 from app.models.periodo_seguimiento import PeriodoSeguimiento, EstadoPeriodo
 from app.models.import_log import ImportLog
 from app.models.configuracion import Configuracion
@@ -33,6 +34,7 @@ __all__ = [
     "ActividadMga",
     "PresupuestoFuente",
     "SeguimientoMeta",
+    "HistorialActividadMeta",
     "PeriodoSeguimiento",
     "EstadoPeriodo",
     "ImportLog",

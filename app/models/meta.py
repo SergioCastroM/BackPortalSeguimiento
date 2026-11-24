@@ -29,3 +29,4 @@ class Meta(Base):
     indicador_producto = relationship("IndicadorProducto", back_populates="metas")
     proyectos_mga = relationship("ProyectoMga", back_populates="meta", cascade="all, delete-orphan")
     seguimientos = relationship("SeguimientoMeta", back_populates="meta", cascade="all, delete-orphan")
+    historial_actividades = relationship("HistorialActividadMeta", back_populates="meta", cascade="all, delete-orphan")
