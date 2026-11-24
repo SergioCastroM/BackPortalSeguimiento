@@ -1,6 +1,6 @@
 from datetime import date
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr, Field
 
@@ -15,10 +15,13 @@ from app.models import (
     PeriodoSeguimiento,
     EstadoPeriodo,
     SeguimientoMeta,
+    HistorialActividadMeta,
     ActividadMga,
     PresupuestoFuente,
     ProyectoMga,
 )
+from app.schemas.historial import PaginatedHistorialResponse
+from app.services.historial_service import listar_historial_admin
 from app.core.security import get_password_hash
 from app.services.periodo_config import (
     TIPO_CUATRIMESTRE,
@@ -309,7 +312,35 @@ def update_trimestre(periodo_id: int, body: TrimestreUpdate, db: Session = Depen
     return {"message": "Período actualizado"}
 
 
+@router.get("/historial", response_model=PaginatedHistorialResponse)
+def list_admin_historial(
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_admin),
+    page: int = Query(1, ge=1),
+    size: int = Query(25, ge=1, le=200),
+    secretaria_id: Optional[int] = Query(None),
+    usuario_id: Optional[int] = Query(None),
+    tipo_evento: Optional[str] = Query(None),
+    trimestre: Optional[int] = Query(None),
+    anio: Optional[int] = Query(None),
+    search: Optional[str] = Query(None),
+):
+    """Bandeja global paginada con el histórico de actividad de todas las secretarías."""
+    return listar_historial_admin(
+        db,
+        page=page,
+        size=size,
+        secretaria_id=secretaria_id,
+        usuario_id=usuario_id,
+        tipo_evento=tipo_evento,
+        trimestre=trimestre,
+        anio=anio,
+        search=search,
+    )
+
+
 class PurgeMetasResponse(BaseModel):
+    eliminados_historial: int = 0
     eliminados_seguimientos: int
     eliminadas_actividades: int
     eliminados_presupuestos_fuente: int
@@ -323,10 +354,11 @@ def delete_all_metas_y_seguimientos(
     current_user: Usuario = Depends(require_admin),
 ):
     """
-    Elimina todas las metas y datos dependientes: seguimientos, proyectos MGA,
+    Elimina todas las metas y datos dependientes: historial, seguimientos, proyectos MGA,
     actividades y presupuestos por fuente. Operación irreversible (solo administrador).
     """
     try:
+        n_hist = db.query(HistorialActividadMeta).delete(synchronize_session=False)
         n_seg = db.query(SeguimientoMeta).delete(synchronize_session=False)
         n_act = db.query(ActividadMga).delete(synchronize_session=False)
         n_pres = db.query(PresupuestoFuente).delete(synchronize_session=False)
@@ -334,6 +366,7 @@ def delete_all_metas_y_seguimientos(
         n_meta = db.query(Meta).delete(synchronize_session=False)
         db.commit()
         return PurgeMetasResponse(
+            eliminados_historial=n_hist,
             eliminados_seguimientos=n_seg,
             eliminadas_actividades=n_act,
             eliminados_presupuestos_fuente=n_pres,

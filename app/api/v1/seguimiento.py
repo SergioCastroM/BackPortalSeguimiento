@@ -2,11 +2,16 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import func
 
 from app.db.session import get_db
 from app.core.deps import get_current_user
 from app.models import Meta, SeguimientoMeta, Usuario, RolUsuario
 from app.schemas.seguimiento import SeguimientoCreate, SeguimientoUpdate, SeguimientoResponse
+from app.services.historial_service import (
+    registrar_evento_seguimiento_actualizado,
+    registrar_evento_seguimiento_creado,
+)
 from app.services.seguimiento_service import (
     calcular_porcentaje,
     denominador_cumplimiento_seguimiento,
@@ -40,11 +45,28 @@ def create_seguimiento(
     # recalcula al sincronizar o mover el presupuesto.
     pct = calcular_porcentaje(float(valor_pesos), referencia)
     if existing:
+        valor_prev = (
+            existing.recursos_ejecutados
+            if existing.recursos_ejecutados is not None
+            else existing.valor_ejecutado
+        )
+        obs_prev = existing.observaciones
+        ev_prev = existing.evidencia
+        existing.usuario_id = current_user.id
+        existing.fecha_registro = func.now()
         existing.valor_ejecutado = valor_pesos
         existing.recursos_ejecutados = valor_pesos
         existing.evidencia = body.evidencia
         existing.porcentaje_cumplimiento = pct
         existing.observaciones = body.observaciones
+        registrar_evento_seguimiento_actualizado(
+            db,
+            existing,
+            current_user.id,
+            valor_anterior=valor_prev,
+            observaciones_anterior=obs_prev,
+            evidencia_anterior=ev_prev,
+        )
         db.commit()
         db.refresh(existing)
         return existing
@@ -60,6 +82,8 @@ def create_seguimiento(
         observaciones=body.observaciones,
     )
     db.add(seg)
+    db.flush()
+    registrar_evento_seguimiento_creado(db, seg, current_user.id)
     db.commit()
     db.refresh(seg)
     return seg
@@ -80,6 +104,13 @@ def update_seguimiento(
         raise HTTPException(status_code=403, detail="No puede editar este seguimiento.")
     if current_user.rol == RolUsuario.secretaria and not puede_crear_editar_seguimiento(db, current_user, seg.trimestre, seg.anio):
         raise HTTPException(status_code=400, detail="El período está cerrado.")
+    valor_prev = (
+        seg.recursos_ejecutados
+        if seg.recursos_ejecutados is not None
+        else seg.valor_ejecutado
+    )
+    obs_prev = seg.observaciones
+    ev_prev = seg.evidencia
     changed_monto = False
     if body.recursos_ejecutados is not None:
         seg.recursos_ejecutados = body.recursos_ejecutados
@@ -104,6 +135,16 @@ def update_seguimiento(
         seg.porcentaje_cumplimiento = calcular_porcentaje(
             float(seg.valor_ejecutado or 0), referencia
         )
+    seg.usuario_id = current_user.id
+    seg.fecha_registro = func.now()
+    registrar_evento_seguimiento_actualizado(
+        db,
+        seg,
+        current_user.id,
+        valor_anterior=valor_prev,
+        observaciones_anterior=obs_prev,
+        evidencia_anterior=ev_prev,
+    )
     db.commit()
     db.refresh(seg)
     return seg
