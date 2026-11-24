@@ -13,6 +13,7 @@ class MetaBase(BaseModel):
     valor_esperado_2025: Optional[Decimal] = 0
     valor_esperado_2026: Optional[Decimal] = 0
     valor_esperado_2027: Optional[Decimal] = 0
+    obligado: Optional[Decimal] = None
     activo: bool = True
 
 
